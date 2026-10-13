@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dicos"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["typer", "rich", "pexpect", "pyotp", "zxing-cpp", "pillow", "pyyaml"]
+
+[project.scripts]
+dicos = "dicos.cli:app"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dicos"]
