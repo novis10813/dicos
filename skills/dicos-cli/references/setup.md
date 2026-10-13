@@ -6,6 +6,19 @@
 - DiCOS account with Google Authenticator 2FA: password plus the TOTP secret.
 - Local `ssh`, `rsync`, `git`, and [uv](https://docs.astral.sh/uv).
 
+## Jump host pre-flight
+
+Before the user runs `dicos init`, check that a jump alias works. These commands never prompt and never touch DiCOS:
+
+```bash
+grep -iE '^\s*Host\s' ~/.ssh/config          # candidate aliases
+ssh -o BatchMode=yes -o ConnectTimeout=8 <alias> true && echo "key auth OK"
+```
+
+- No alias, or the user does not know which server is allow-listed: ask the user. Only they know the hostname and their lab username.
+- `Permission denied` under BatchMode: the lab SSH key is not loaded or the alias is wrong. Ask the user to check; do not create or copy keys.
+- An agent may add a `Host` block to `~/.ssh/config` with values the user gave, after showing it to them. Never edit existing blocks.
+
 ## Install and update
 
 ```bash

@@ -33,6 +33,23 @@ dicos init      # username, TOTP, password, jump host, first login, remote workd
 dicos doctor    # verify files, jump host, login, sinfo, account, workdir, GitHub
 ```
 
+### Jump host
+
+DiCOS accepts SSH only from allow-listed IPs, so dicos connects through a lab server that is on the list (ProxyJump). Add the server to `~/.ssh/config` with the SSH key you were given for the lab:
+
+```sshconfig
+Host labjump
+    HostName lab-server.example.edu   # your lab server
+    User your-lab-username
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+```bash
+ssh -o BatchMode=yes labjump true      # must succeed without any prompt
+```
+
+The key is only for the lab server. DiCOS itself uses password plus TOTP. `dicos init` then finds `labjump` among your Host aliases and shows whether it reaches `slurm-ui.twgrid.org:22`. Without a reachable alias, only a direct connection from an allow-listed network works.
+
 ### TOTP secret from Google Authenticator
 
 `dicos init` needs the TOTP secret, which the app does not show directly. Export it as a QR code:
