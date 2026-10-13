@@ -32,6 +32,8 @@ dicos doctor    # verify files, jump host, login, sinfo, account, workdir, GitHu
 - One SSH ControlMaster (`~/.dicos/cm.sock`, 8 h) performs 2FA. Every other command reuses it.
 - Remote `$HOME` is temporary NFS. Job data lives under the persistent workdir.
 
+Partition names are not uniform (`a100-al9`, `a100_short-al9`, `a100_devel-al9`, `v100-al9_short`). Run `dicos status` for the exact names your account can use.
+
 ## Commands
 
 | Command | Purpose |
@@ -54,6 +56,7 @@ Time accepts `30m`, `6h`, `2d`, `1d12h`, or raw Slurm format. Defaults for `part
 ```bash
 # Git mode (default): HEAD must be clean and pushed; the login node clones it with your forwarded ssh-agent.
 dicos run -p a100-al9 --gpus 1 -t 6h -- python train.py --epochs 10
+dicos run -p a100_devel-al9 --gpus 1 -t 10m -- nvidia-smi   # 20 min limit, for quick checks
 dicos run -p a100-al9 --gpus 1 --branch exp -- python train.py
 
 # Sync mode: rsync the working tree (honours .gitignore, skips .git/.venv).

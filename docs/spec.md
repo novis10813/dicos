@@ -18,8 +18,9 @@ Reference prototype (login automation, QR/TOTP decode, tested and working): `~/r
 - More than 5 failed logins bans the source IP (the shared jump host). Never retry automatically. Stop on the first
   repeated prompt.
 - The MOTD printed after login contains the text `password:` — output after auth must never be matched against prompts.
-- Slurm: GPU request `--gres=gpu:N` (≤8/node). Partitions end in `-al9` (e.g. `a100-al9`, `a100-al9_short`,
-  `a100-al9_devel` (20 min), `v100-al9*`, `b6000-al9*`, `edr1-al9_short_serial` CPU). Some partitions have
+- Slurm: GPU request `--gres=gpu:N` (≤8/node). Partition names contain `al9` with inconsistent suffix order
+  (e.g. `a100-al9`, `a100_short-al9`, `a100_long-al9`, `a100_devel-al9` (20 min), `v100-al9*`, `b6000-al9*`,
+  `edr1-al9_short_serial` CPU). Some partitions have
   `AllowAccounts` that exclude the user's account (`idlab`). Always read partitions live from `sinfo`/`scontrol`.
 - Account association: `sacctmgr -n show assoc user=$USER format=account -P`.
 - Storage: `$HOME=/dicos_ui_home/<user>` (NFS, temporary, no integrity guarantee). Persistent: `/ceph/work/<group>/`.
