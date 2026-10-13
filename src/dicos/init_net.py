@@ -15,6 +15,7 @@ from dicos.config import Config
 from dicos.credentials import Credentials
 
 HOST = "slurm-ui.twgrid.org"
+DETECT_TIMEOUT = 180
 LOGIN_WARNING = "Do not retry repeatedly: 5 failed logins ban the jump host IP."
 
 
@@ -72,7 +73,7 @@ def select_jump(jump: str | None = None, no_jump: bool = False, *, probe: bool =
 
 
 DETECT_WORKDIR = r'''set -e
-account=$(sacctmgr -n show assoc user=$USER format=account -P | head -1)
+account=$(timeout 60 sacctmgr -n show assoc user=$USER format=account -P | head -1)
 account=${account%%|*}
 account=$(printf '%s' "$account" | tr -d '[:space:]')
 workdir="$HOME/dicos"
@@ -82,7 +83,7 @@ if [ -n "$account" ] && [ -d /ceph/work ]; then
             workdir="/ceph/work/$group/$USER/dicos"
             break
         fi
-    done < <(ls /ceph/work)
+    done < <(timeout 60 ls /ceph/work)
 fi
 mkdir -p "$workdir"
 printf '%s\n' "$workdir"
@@ -96,7 +97,12 @@ def connect_and_detect(cfg: Config, creds: Credentials) -> str:
         typer.echo(str(exc), err=True)
         typer.echo(LOGIN_WARNING, err=True)
         raise typer.Exit(1) from None
-    result = conn.run(cfg, "bash -s", input=DETECT_WORKDIR)
+    typer.echo("Detecting remote work directory…")
+    try:
+        result = conn.run(cfg, "bash -s", input=DETECT_WORKDIR, timeout=DETECT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"Work directory detection timed out ({DETECT_TIMEOUT}s). "
+                         "Saved configuration is kept; run `dicos init --force` again later.") from None
     if result.returncode or not result.stdout.strip():
         raise ValueError("Could not create the remote work directory.")
     return result.stdout.strip().splitlines()[-1]

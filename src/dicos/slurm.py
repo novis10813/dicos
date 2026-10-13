@@ -28,26 +28,66 @@ _DEFAULT_SETUP = """if [ -f pyproject.toml ]; then
 fi"""
 
 
-def render_job_script(id: str, partition: str, time: str, cpus: int,
-                      mem: str | None, gpus: int, jobdir: str,
-                      setup: str | None, command: str, src_dir: str) -> str:
-    lines = ["#!/bin/bash", f"#SBATCH --job-name={id}",
+def _render(name: str, partition: str, time: str, cpus: int, mem: str | None, gpus: int,
+            output: str, header: list[str], exports: list[str], src_dir: str,
+            setup: list[str], body: list[str]) -> str:
+    lines = ["#!/bin/bash", f"#SBATCH --job-name={name}",
              f"#SBATCH --partition={partition}", f"#SBATCH --time={parse_time(time)}",
              f"#SBATCH --cpus-per-task={cpus}"]
     if mem is not None:
         lines.append(f"#SBATCH --mem={mem}")
     if gpus:
         lines.append(f"#SBATCH --gres=gpu:{gpus}")
-    output = shlex.quote(f"{jobdir}/output.log")
-    lines.extend([f"#SBATCH --output={output}", f"#SBATCH --error={output}",
-                  "set -eo pipefail",
-                  f"export DICOS_JOB_ID={shlex.quote(id)} PYTHONUNBUFFERED=1",
-                  'export PATH="$HOME/.local/bin:$PATH"', f"cd {shlex.quote(src_dir)}"])
-    setup = _DEFAULT_SETUP if setup is None else setup
-    if setup:
-        lines.append(setup)
-    lines.append(command)
+    output = shlex.quote(output)
+    lines.extend([*header, f"#SBATCH --output={output}", f"#SBATCH --error={output}",
+                  "set -eo pipefail", *exports,
+                  'export PATH="$HOME/.local/bin:$PATH"', f"cd {shlex.quote(src_dir)}",
+                  *setup, *body])
     return "\n".join(lines) + "\n"
+
+
+def _setup(setup: str | None) -> list[str]:
+    setup = _DEFAULT_SETUP if setup is None else setup
+    return [setup] if setup else []
+
+
+def render_job_script(id: str, partition: str, time: str, cpus: int,
+                      mem: str | None, gpus: int, jobdir: str,
+                      setup: str | None, command: str, src_dir: str) -> str:
+    return _render(id, partition, time, cpus, mem, gpus, f"{jobdir}/output.log", [],
+                   [f"export DICOS_JOB_ID={shlex.quote(id)} PYTHONUNBUFFERED=1"],
+                   src_dir, _setup(setup), [command])
+
+
+def render_array_script(ids: list[str], partition: str, time: str, cpus: int,
+                        mem: str | None, gpus: int, jobdir: str,
+                        setup: str | None, commands: list[str], src_dir: str) -> str:
+    """One Slurm array job; element i runs commands[i] as job ids[i]."""
+    if not ids or len(ids) != len(commands):
+        raise ValueError("Array jobs need one ID per command.")
+    exports = ["ids=(" + " ".join(shlex.quote(id) for id in ids) + ")",
+               "commands=(", *(shlex.quote(command) for command in commands), ")",
+               'export DICOS_JOB_ID="${ids[$SLURM_ARRAY_TASK_ID]}" PYTHONUNBUFFERED=1']
+    setup = _setup(setup)
+    if setup:
+        # Elements share src/, so serialize setup such as `uv sync`.
+        setup = [f"exec 9>{shlex.quote(jobdir + '/.setup.lock')}", "flock 9", *setup,
+                 "flock -u 9", "exec 9>&-"]
+    return _render(ids[0], partition, time, cpus, mem, gpus, f"{jobdir}/output_%a.log",
+                   [f"#SBATCH --array=0-{len(ids) - 1}"], exports, src_dir, setup,
+                   ['eval "${commands[$SLURM_ARRAY_TASK_ID]}"'])
+
+
+def expand_array_ids(job_id: str) -> list[str]:
+    """Expand Slurm's compact pending-array form, e.g. 12_[0-3,5%2]."""
+    match = re.fullmatch(r"(\d+)_\[([\d,\-]+)(?:%\d+)?\]", job_id)
+    if not match:
+        return [job_id]
+    ids = []
+    for part in match.group(2).split(","):
+        start, _, end = part.partition("-")
+        ids.extend(f"{match.group(1)}_{i}" for i in range(int(start), int(end or start) + 1))
+    return ids
 
 
 def map_state(raw: str) -> str:
@@ -78,7 +118,8 @@ def parse_squeue(text: str) -> dict[str, str]:
         if not line.strip():
             continue
         job_id, state = line.strip().split("|", 1)
-        jobs[job_id.strip()] = state.strip()
+        for id in expand_array_ids(job_id.strip()):
+            jobs[id] = state.strip()
     return jobs
 
 
@@ -90,7 +131,8 @@ def parse_sacct(text: str) -> dict[str, tuple[str, int, str, str]]:
         job_id, state, code, start, end = line.strip().split("|")[:5]
         if "." in job_id:
             continue
-        jobs[job_id] = (state, int(code.split(":", 1)[0]), start, end)
+        for id in expand_array_ids(job_id):
+            jobs[id] = (state, int(code.split(":", 1)[0]), start, end)
     return jobs
 
 

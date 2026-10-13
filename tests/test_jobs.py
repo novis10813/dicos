@@ -156,8 +156,9 @@ def test_submit_failure(remote, monkeypatch, failure):
     assert job['finished_at']
 
 
-@pytest.mark.parametrize('args,message', [(['run', '--', 'true'], 'git mode not implemented yet, use --sync'),
-                                         (['run', '--sync'], 'Provide a command')])
+@pytest.mark.parametrize('args,message', [(['run', '--', 'true'], 'not a git repository; use --sync'),
+                                         (['run', '--sync'], 'Provide a command'),
+                                         (['run', '--sync', '--branch', 'main', '--', 'true'], 'drop --sync')])
 def test_run_rejected(remote, args, message):
     result = runner.invoke(cli.app, args)
     assert result.exit_code != 0 and message in result.output

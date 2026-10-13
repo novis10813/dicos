@@ -95,14 +95,17 @@ def init(
             password = typer.prompt("Password", hide_input=True)
         if not password:
             raise ValueError("Password must not be empty.")
-        selected_jump = init_net.select_jump(jump=jump, no_jump=no_jump, probe=False)
+        # Probing touches the jump hosts, so skip it while a failed login is latched.
+        probe_first = jump is None and not no_jump and not (paths.home() / "login.failed").exists()
+        selected_jump = init_net.select_jump(jump=jump, no_jump=no_jump, probe=probe_first)
         cfg = config.Config(user=username, jump=selected_jump)
         creds = credentials.Credentials(password=password, totp_secret=account.secret)
         code_value = otp.current_code(creds.totp_secret)
         credentials.save(creds)
         config.save(cfg)
         (paths.home() / "login.failed").unlink(missing_ok=True)
-        init_net.select_jump(jump=selected_jump, no_jump=selected_jump is None)
+        if not probe_first:
+            init_net.select_jump(jump=selected_jump, no_jump=selected_jump is None)
         typer.echo(f"Current TOTP code: {code_value}")
         workdir = init_net.connect_and_detect(cfg, creds)
         if workdir is not None:
@@ -235,7 +238,10 @@ def doctor():
                 try:
                     result = conn.run(cfg, "timeout 20 bash -c " + shlex.quote(command))
                     ok = result.returncode == 0 and (not needs_output or bool(result.stdout.strip().strip("|")))
-                    row(name, ok, result.stdout.strip() or result.stderr.strip() or f"exit {result.returncode}")
+                    detail = result.stdout.strip() or result.stderr.strip() or f"exit {result.returncode}"
+                    if name == "sinfo" and result.returncode == 0:
+                        detail = f"{len(set(result.stdout.split()))} partitions"
+                    row(name, ok, detail)
                 except OSError as exc:
                     row(name, False, str(exc))
     Console().print(table)
@@ -289,35 +295,87 @@ def status(all_partitions: bool = typer.Option(False, "--all")):
         raise typer.Exit(1) from None
 
 
+_PARTITION = typer.Option(None, "-p", "--partition")
+_GPUS = typer.Option(None, "--gpus", min=0)
+_CPUS = typer.Option(None, "--cpus", min=1)
+_MEM = typer.Option(None, "--mem")
+_TIME = typer.Option(None, "-t", "--time", help="30m, 6h, 2d, 1d12h, or Slurm format.")
+_SYNC = typer.Option(False, "--sync", help="rsync the working tree instead of a pushed commit.")
+_BRANCH = typer.Option(None, "--branch", help="Exact local branch published on origin.")
+_COMMIT = typer.Option(None, "--commit", help="Full or unique abbreviated commit SHA.")
+_TAG = typer.Option(None, "--tag", help="Exact local tag published on origin.")
+
+
+def _submit(sync, branch, commit, tag, resources, commands, array):
+    """Resolve project and commit locally, then log in, ship code, and submit."""
+    from dicos import gitutil, jobs
+    from dicos.store import JobStore
+
+    cfg = config.load()
+    if not cfg.workdir:
+        raise ValueError("Workdir missing: run dicos init.")
+    if sync and any(value is not None for value in (branch, commit, tag)):
+        raise ValueError("--branch, --commit and --tag select a git commit; drop --sync.")
+    request = jobs.resources(cfg, **resources)
+    root, name, project = jobs.resolve_project(cfg)
+    sha = None if sync else gitutil.resolve_commit(root, branch=branch, commit=commit, tag=tag)
+    cfg = _remote_config()
+    submitted = jobs.submit(JobStore(), cfg, root, name, project, request, commands,
+                            mode="sync" if sync else "git", sha=sha, array=array)
+    for job in submitted:
+        typer.echo(f"{job['id']} (slurm {job['slurm_id']}) queued on {job['partition']}")
+
+
 @app.command("run", context_settings={"allow_extra_args": True})
 def run_job(
     ctx: typer.Context,
-    sync: bool = typer.Option(False, "--sync"),
-    partition: Optional[str] = typer.Option(None, "-p", "--partition"),
-    gpus: Optional[int] = typer.Option(None, "--gpus", min=0),
-    cpus: Optional[int] = typer.Option(None, "--cpus", min=1),
-    mem: Optional[str] = typer.Option(None, "--mem"),
-    time: Optional[str] = typer.Option(None, "-t", "--time"),
+    sync: bool = _SYNC,
+    partition: Optional[str] = _PARTITION,
+    gpus: Optional[int] = _GPUS,
+    cpus: Optional[int] = _CPUS,
+    mem: Optional[str] = _MEM,
+    time: Optional[str] = _TIME,
+    branch: Optional[str] = _BRANCH,
+    commit: Optional[str] = _COMMIT,
+    tag: Optional[str] = _TAG,
 ):
-    """Submit the working tree with --sync and a command after --."""
-    from dicos import jobs
-    from dicos.store import JobStore
-
-    if not sync:
-        typer.echo("git mode not implemented yet, use --sync", err=True)
-        raise typer.Exit(1)
+    """Submit CMD after -- from a pushed commit (default) or the working tree (--sync)."""
     if not ctx.args:
         raise typer.BadParameter("Provide a command after --.")
+    command = ctx.args[0] if len(ctx.args) == 1 else shlex.join(ctx.args)
     try:
-        cfg = config.load()
-        if not cfg.workdir:
-            raise ValueError("Workdir missing: run dicos init.")
-        request = jobs.resources(cfg, partition, gpus, cpus, mem, time)
-        root, name, project = jobs.resolve_project(cfg)
-        cfg = _remote_config()
-        command = ctx.args[0] if len(ctx.args) == 1 else shlex.join(ctx.args)
-        job = jobs.submit_sync(JobStore(), cfg, root, name, project, request, command)
-        typer.echo(f"{job['id']} (slurm {job['slurm_id']}) queued on {job['partition']}")
+        _submit(sync, branch, commit, tag, dict(partition=partition, gpus=gpus, cpus=cpus, mem=mem, time=time),
+                [command], array=False)
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+
+
+@app.command()
+def sweep(
+    file: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True, help="Sweep YAML file."),
+    sync: bool = _SYNC,
+    partition: Optional[str] = _PARTITION,
+    gpus: Optional[int] = _GPUS,
+    cpus: Optional[int] = _CPUS,
+    mem: Optional[str] = _MEM,
+    time: Optional[str] = _TIME,
+    branch: Optional[str] = _BRANCH,
+    commit: Optional[str] = _COMMIT,
+    tag: Optional[str] = _TAG,
+):
+    """Submit one Slurm array job with one element per grid point of FILE."""
+    import yaml
+    from dicos import sweep as sweeps
+
+    try:
+        try:
+            commands, resources = sweeps.load_sweep(yaml.safe_load(file.read_text(encoding="utf-8")))
+        except (sweeps.SweepError, yaml.YAMLError) as exc:
+            raise ValueError(f"{file}: {exc}") from None
+        flags = dict(partition=partition, gpus=gpus, cpus=cpus, mem=mem, time=time)
+        resources.update({key: value for key, value in flags.items() if value is not None})
+        _submit(sync, branch, commit, tag, resources, commands, array=True)
     except (conn.LoginError, ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from None
@@ -392,15 +450,14 @@ def logs(
     lines: int = typer.Option(200, "-n", "--lines", min=0),
     follow: bool = typer.Option(False, "-f", "--follow"),
 ):
-    """Read output.log through the existing SSH master."""
+    """Read the job's output log through the SSH master."""
     from dicos.store import JobStore
+
+    from dicos.jobs import log_path
 
     try:
         job = _job(JobStore(), id)
-        if not job["remote_dir"]:
-            raise ValueError(f"Job {id} has no remote directory.")
-        command = f"tail -n {lines} " + ("-F " if follow else "")
-        command += shlex.quote(job["remote_dir"] + "/output.log")
+        command = f"tail -n {lines} " + ("-F " if follow else "") + shlex.quote(log_path(job))
         conn.exec_interactive(_remote_config(), command)
     except (conn.LoginError, ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
@@ -427,3 +484,118 @@ def stop(id: str):
     except (conn.LoginError, ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from None
+
+
+WAIT_CODES = {"succeeded": 0, "failed": 1, "cancelled": 2, "lost": 3}
+
+
+@app.command()
+def wait(
+    id: str,
+    timeout: Optional[float] = typer.Option(None, "--timeout", min=0, help="Seconds; exit 124 when reached."),
+    interval: float = typer.Option(15, "--interval", min=1, help="Seconds between refreshes."),
+):
+    """Wait until a job finishes: exit 0 succeeded, 1 failed, 2 cancelled, 3 lost, 124 timeout."""
+    import time as clock
+    from dicos.jobs import refresh
+    from dicos.store import JobStore
+
+    try:
+        store = JobStore()
+        job = _job(store, id)
+        deadline = None if timeout is None else clock.monotonic() + timeout
+        cfg = None
+        while job["status"] not in WAIT_CODES:
+            if cfg is None:
+                cfg = config.load()
+            conn.ensure_master(cfg, credentials.load())
+            refresh(store, cfg)
+            job = _job(store, id)
+            if job["status"] in WAIT_CODES:
+                break
+            remaining = None if deadline is None else deadline - clock.monotonic()
+            if remaining is not None and remaining <= 0:
+                typer.echo(f"{id} still {job['status']} after {timeout:g}s")
+                raise typer.Exit(124)
+            clock.sleep(interval if remaining is None else min(interval, remaining))
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    detail = f" ({job['error']})" if job["status"] == "failed" and job["error"] else ""
+    typer.echo(f"{id} {job['status']}{detail}")
+    raise typer.Exit(WAIT_CODES[job["status"]])
+
+
+@app.command()
+def clean(id: str, yes: bool = typer.Option(False, "-y", "--yes", help="Do not ask for confirmation.")):
+    """Remove a finished job's remote directory."""
+    from dicos.jobs import checked_run, clean_command
+    from dicos.store import JobStore
+
+    try:
+        store = JobStore()
+        job = _job(store, id)
+        cfg = config.load()
+        command = clean_command(store, cfg, job)
+        shared = [j["id"] for j in store.by_remote_dir(job["remote_dir"])]
+        target = job["remote_dir"] + (f" (shared by {', '.join(shared)})" if len(shared) > 1 else "")
+        if not yes and not typer.confirm(f"Remove {target}?"):
+            typer.echo("Cancelled.")
+            raise typer.Exit(1)
+        checked_run(_remote_config(), command)
+        typer.echo(f"Removed {job['remote_dir']}")
+    except (typer.Abort, EOFError):
+        typer.echo("Cancelled.", err=True)
+        raise typer.Exit(1) from None
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+
+
+@app.command()
+def update(check: bool = typer.Option(False, "--check", help="Only report whether an update is available.")):
+    """Update dicos to the latest commit of its git source (reinstalls via uv)."""
+    import shutil
+    from dicos import update as updates
+
+    def fail(message):
+        typer.echo(f"error: {message}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        source = updates.installed_source()
+    except updates.UpdateError as exc:
+        fail(str(exc))
+    if source is None:
+        fail("dicos has no installed git source (e.g. an editable checkout); "
+             "update its checkout with git pull --ff-only, or reinstall using its original installer")
+    if not updates.is_uv_tool_install():
+        fail("dicos is not managed by uv tool; update it with the installer you used")
+    url, current = source
+    try:
+        remote = updates.remote_head(url)
+    except updates.UpdateError as exc:
+        fail(str(exc))
+    if current == remote:
+        typer.echo(f"dicos is up to date ({remote[:7]})")
+        return
+    if current:
+        typer.echo(f"update available: {current[:7]} -> {remote[:7]} ({url})")
+    else:
+        typer.echo(f"installed commit unknown; remote HEAD is {remote[:7]} ({url})")
+    if check:
+        return
+    uv = shutil.which("uv")
+    if uv is None:
+        fail("'uv' not found in PATH; install uv (https://docs.astral.sh/uv) and retry")
+    requirement = updates.uv_git_requirement(url)
+    typer.echo(f"updating: uv tool install --force --refresh {requirement}")
+    try:
+        code = updates.run_install([uv, "tool", "install", "--force", "--refresh", requirement])
+    except OSError as exc:
+        fail(f"could not run uv: {exc}")
+    if code:
+        fail(f"`uv tool install --force --refresh` exited with code {code}")
+    typer.echo(f"dicos updated to {remote[:7]}")
+    # The installer may have replaced this environment; exit without further imports.
+    raise typer.Exit(0)

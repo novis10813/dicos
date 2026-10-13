@@ -106,9 +106,20 @@ def test_migration_accepts_supported_parameters(value):
     assert len(parse_otpauth(_export_uri(entry))) == 1
 
 
-def test_migration_skips_non_totp():
+def test_migration_rejects_only_non_totp():
     entry = _field(1, b"synthetic-test") + _field(6, 1)
-    assert parse_otpauth(_export_uri(entry)) == []
+    with pytest.raises(ValueError):
+        parse_otpauth(_export_uri(entry))
+
+
+@pytest.mark.parametrize("bad", [_field(6, 1), _field(6, 2) + _field(4, 2), _field(6, 2) + _field(5, 2)])
+def test_migration_skips_unsupported_entries(bad):
+    good = _field(1, b"synthetic-good") + _field(3, b"DiCOS") + _field(6, 2)
+    payload = _field(1, _field(1, b"synthetic-bad") + bad) + _field(1, good)
+    uri = "otpauth-migration://offline?data=" + urllib.parse.quote(base64.b64encode(payload).decode())
+    [account] = parse_otpauth(uri)
+    assert account.issuer == "DiCOS"
+    assert account.secret == base64.b32encode(b"synthetic-good").decode().rstrip("=")
 
 
 @pytest.mark.parametrize("kind,query", [

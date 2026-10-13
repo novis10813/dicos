@@ -310,3 +310,31 @@ def test_init_all_prompt_cancellations(monkeypatch, prompt, failure):
     assert "init cancelled: input required" in result.output
     assert "jump host" not in result.output
     assert not paths.home().exists()
+
+
+@pytest.mark.parametrize("latched", [False, True])
+def test_init_interactive_jump_probes_unless_latched(tmp_path, monkeypatch, latched):
+    ssh = tmp_path / ".ssh"
+    ssh.mkdir()
+    (ssh / "config").write_text("Host lab1\nHost lab2\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if latched:
+        config.save(config.Config("original"))
+        paths.write_private(paths.home() / "login.failed", "stale")
+    calls = []
+
+    def probe(candidates, **kwargs):
+        calls.append((list(candidates), (paths.home() / "login.failed").exists()))
+        return {None: False, "lab1": False, "lab2": True} if len(candidates) > 1 else dict.fromkeys(candidates, True)
+
+    monkeypatch.setattr(init_net, "probe_jumps", probe)
+    result = runner.invoke(app, ["init", "--force", "--user", "alice", "--password-stdin", "--totp-secret-stdin"],
+                           input="synthetic-password\n" + SECRET + "\n" + "lab2\n")
+    assert result.exit_code == 0, result.output
+    assert config.load().jump == "lab2"
+    if latched:
+        assert calls == [(["lab2"], False)]
+        assert "STATUS" not in result.output
+    else:
+        assert calls == [([None, "lab1", "lab2"], False)]
+        assert "STATUS" in result.output and "FAIL" in result.output

@@ -142,7 +142,12 @@ def test_run(monkeypatch):
     calls = []
     monkeypatch.setattr(conn.subprocess, "run", lambda *a, **kw: calls.append((a, kw)) or "result")
     assert conn.run(CFG, "cat", input="data", check=True) == "result"
-    assert calls == [((conn.ssh_argv(CFG, "cat", False),), dict(input="data", text=True, capture_output=True, check=True))]
+    assert calls == [((conn.ssh_argv(CFG, "cat", False),), dict(input="data", text=True, capture_output=True,
+                                                                check=True, timeout=None))]
+    calls.clear()
+    conn.run(CFG, "git", agent=True, timeout=5)
+    assert calls[0][0] == (conn.ssh_argv(CFG, "git", False, agent=True),) and calls[0][1]["timeout"] == 5
+    assert "-A" in calls[0][0][0]
 
 
 @pytest.mark.parametrize("cmd,stdin_tty,expected", [(None, False, True), ("pwd", False, False), ("pwd", True, True)])

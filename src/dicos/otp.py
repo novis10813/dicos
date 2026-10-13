@@ -57,11 +57,9 @@ def _parse_migration(uri: str) -> list[OtpAccount]:
         if num != 1:
             continue
         f = dict(_parse_fields(val))
-        # Skip non-TOTP entries. Reject algorithms/digits other than unspecified or SHA1/SIX.
-        if f.get(6, 2) != 2:
+        # Skip non-TOTP entries and algorithms/digits other than unspecified or SHA1/SIX.
+        if f.get(6, 2) != 2 or f.get(4, 0) not in (0, 1) or f.get(5, 0) not in (0, 1):
             continue
-        if f.get(4, 0) not in (0, 1) or f.get(5, 0) not in (0, 1):
-            raise ValueError("Unsupported TOTP algorithm or digit count.")
         accounts.append(
             OtpAccount(
                 name=f.get(2, b"").decode(),
@@ -69,6 +67,8 @@ def _parse_migration(uri: str) -> list[OtpAccount]:
                 secret=base64.b32encode(f[1]).decode().rstrip("="),
             )
         )
+    if not accounts:
+        raise ValueError("No supported TOTP account (6-digit SHA1) in the export.")
     return accounts
 
 

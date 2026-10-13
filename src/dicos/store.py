@@ -65,18 +65,28 @@ class JobStore:
             raise ValueError(f"Invalid status: {fields['status']}")
 
     def add(self, project: str, prefix: str, **fields) -> str:
-        self._validate(fields)
+        return self.add_many(project, prefix, [fields])[0]
+
+    def add_many(self, project: str, prefix: str, rows: list[dict]) -> list[str]:
+        """Insert rows with consecutive per-project sequence numbers in one transaction."""
+        for fields in rows:
+            self._validate(fields)
         if not re.fullmatch(r"[A-Za-z0-9_-]+", prefix):
             raise ValueError("Invalid job prefix")
+        ids = []
         with self._connect(write=True) as db:
-            seq = db.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM jobs WHERE project = ?", (project,)).fetchone()[0]
-            job_id = f"{prefix}-{seq}"
-            row = {"id": job_id, "project": project, "seq": seq,
-                   "status": "queued", "created_at": datetime.now(timezone.utc).isoformat(), **fields}
-            columns = ", ".join(row)
-            placeholders = ", ".join("?" for _ in row)
-            db.execute(f"INSERT INTO jobs ({columns}) VALUES ({placeholders})", tuple(row.values()))
-        return job_id
+            seq = db.execute("SELECT COALESCE(MAX(seq), 0) FROM jobs WHERE project = ?", (project,)).fetchone()[0]
+            created = datetime.now(timezone.utc).isoformat()
+            for fields in rows:
+                seq += 1
+                job_id = f"{prefix}-{seq}"
+                row = {"id": job_id, "project": project, "seq": seq,
+                       "status": "queued", "created_at": created, **fields}
+                columns = ", ".join(row)
+                placeholders = ", ".join("?" for _ in row)
+                db.execute(f"INSERT INTO jobs ({columns}) VALUES ({placeholders})", tuple(row.values()))
+                ids.append(job_id)
+        return ids
 
     def get(self, id: str) -> dict | None:
         with self._connect() as db:
@@ -118,3 +128,8 @@ class JobStore:
         with self._connect() as db:
             return [dict(row) for row in db.execute(
                 "SELECT * FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at DESC, rowid DESC")]
+
+    def by_remote_dir(self, remote_dir: str) -> list[dict]:
+        with self._connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT * FROM jobs WHERE remote_dir = ? ORDER BY seq", (remote_dir,))]

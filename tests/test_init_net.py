@@ -66,7 +66,20 @@ def test_detect(monkeypatch):
     monkeypatch.setattr(conn, "ensure_master", lambda *a: calls.append("master"))
     monkeypatch.setattr(conn, "run", lambda cfg, cmd, **kw: calls.append((cmd, kw)) or subprocess.CompletedProcess([], 0, "/home/alice/dicos\n", ""))
     assert init_net.connect_and_detect(cfg, creds) == "/home/alice/dicos"
-    assert calls == ["master", ("bash -s", {"input": init_net.DETECT_WORKDIR})]
+    assert calls == ["master", ("bash -s", {"input": init_net.DETECT_WORKDIR, "timeout": 180})]
+    assert "timeout 60 sacctmgr" in init_net.DETECT_WORKDIR and "timeout 60 ls /ceph/work" in init_net.DETECT_WORKDIR
+
+
+def test_detect_timeout(monkeypatch, capsys):
+    monkeypatch.setattr(conn, "ensure_master", lambda *a: None)
+
+    def slow(cfg, cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    monkeypatch.setattr(conn, "run", slow)
+    with pytest.raises(ValueError, match="timed out"):
+        init_net.connect_and_detect(config.Config("alice"), credentials.Credentials("x", "x"))
+    assert "Detecting remote work directory" in capsys.readouterr().out
 
 
 def test_detect_login_failure(monkeypatch, capsys):

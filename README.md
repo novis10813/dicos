@@ -1,0 +1,81 @@
+# dicos
+
+CLI for running Slurm jobs on ASGC DiCOS (`slurm-ui.twgrid.org`) from a laptop. Verbs mirror `lab`.
+
+## Requirements
+
+- SSH access from an allow-listed source IP. Usually a lab server alias in `~/.ssh/config` (key auth) used as ProxyJump.
+- A DiCOS account with Google Authenticator 2FA: password plus TOTP secret (secret, `otpauth://` URI, Google Authenticator export URI, or a QR image of any of these).
+- `ssh`, `rsync`, `git`, and [uv](https://docs.astral.sh/uv) locally.
+
+## Install
+
+```bash
+uvx --from git+<repo-url> dicos --help      # one-off
+uv tool install git+<repo-url>              # persistent; later: dicos update
+```
+
+## Setup
+
+```bash
+dicos init      # username, TOTP, password, jump host, first login, remote workdir
+dicos doctor    # verify files, jump host, login, sinfo, account, workdir, GitHub
+```
+
+`init` probes every `~/.ssh/config` Host alias (and a direct connection) for reachability of `slurm-ui.twgrid.org:22`, prints the current TOTP for comparison with your app, opens the SSH master, and picks `/ceph/work/<group>/<user>/dicos` (fallback `$HOME/dicos`). Scriptable: `--user`, `--jump ALIAS|--no-jump`, `--qr PATH`, `--password-stdin`, `--totp-secret-stdin` (password line first), `--force`.
+
+## Safety
+
+- More than 5 failed logins ban the source IP, which is the shared jump host. dicos never retries a login.
+- After a failed login, dicos writes `~/.dicos/login.failed` and refuses further attempts. Fix the cause, then run `dicos init --force` (new credentials) or `dicos logout` (allows one new attempt).
+- `~/.dicos` is mode 0700 and every file 0600. Credentials refuse to load with looser modes. No OS keyring.
+- One SSH ControlMaster (`~/.dicos/cm.sock`, 8 h) performs 2FA. Every other command reuses it.
+- Remote `$HOME` is temporary NFS. Job data lives under the persistent workdir.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `init`, `doctor`, `code`, `logout` | Setup, health check, print current TOTP, close master |
+| `status [--all]` | Partitions your account may use (`--all`: every partition) |
+| `run [-p P] [--gpus N] [--cpus N] [--mem 32G] [-t 6h] [--sync] [--branch/--commit/--tag] -- CMD` | Submit one job |
+| `sweep FILE.yaml [same flags]` | Submit one Slurm array job, one record per grid point |
+| `list [-s STATUS] [--all]`, `show ID` | Refresh and inspect jobs |
+| `logs ID [-n 200] [-f]` | Tail the job log |
+| `wait ID [--timeout S] [--interval 15]` | Exit 0 succeeded, 1 failed, 2 cancelled, 3 lost, 124 timeout |
+| `stop ID`, `clean ID [-y]` | Cancel, remove the remote job directory of a finished job |
+| `ssh`, `exec -- CMD` | Shell or command on the login node |
+| `update [--check]` | Reinstall from the git source via `uv tool install` |
+
+Time accepts `30m`, `6h`, `2d`, `1d12h`, or raw Slurm format. Defaults for `partition`, `time`, `gpus`, `cpus`, `mem` can be set under `defaults:` in `~/.dicos/config.yaml`. Per-project `setup:` replaces the default setup (install uv if missing, `uv sync` when `pyproject.toml` exists).
+
+## Examples
+
+```bash
+# Git mode (default): HEAD must be clean and pushed; the login node clones it with your forwarded ssh-agent.
+dicos run -p a100-al9 --gpus 1 -t 6h -- python train.py --epochs 10
+dicos run -p a100-al9 --gpus 1 --branch exp -- python train.py
+
+# Sync mode: rsync the working tree (honours .gitignore, skips .git/.venv).
+dicos run --sync -p edr1-al9_short_serial -t 10m -- python3 check.py
+
+dicos logs train-3 -f
+dicos wait train-3 --timeout 3600 && echo done
+dicos clean train-3 -y
+```
+
+Sweep file:
+
+```yaml
+command: python train.py --lr {lr} --seed {seed}
+grid:
+  lr: [0.1, 0.01]
+  seed: [1, 2, 3]
+partition: a100-al9   # optional: partition, gpus, cpus, mem, time (flags override)
+gpus: 1
+time: 6h
+```
+
+```bash
+dicos sweep sweep.yaml          # 6 records, one array job; logs read output_<i>.log
+```

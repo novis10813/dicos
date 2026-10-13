@@ -169,9 +169,10 @@ def ssh_argv(cfg: Config, cmd: str | None, tty: bool, agent: bool = False) -> li
     return argv
 
 
-def run(cfg: Config, cmd: str, input: str | None = None, check: bool = False) -> subprocess.CompletedProcess:
-    return subprocess.run(ssh_argv(cfg, cmd, tty=False), input=input, text=True,
-                          capture_output=True, check=check)
+def run(cfg: Config, cmd: str, input: str | None = None, check: bool = False,
+        agent: bool = False, timeout: float | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(ssh_argv(cfg, cmd, tty=False, agent=agent), input=input, text=True,
+                          capture_output=True, check=check, timeout=timeout)
 
 
 def exec_interactive(cfg: Config, cmd: str | None) -> None:

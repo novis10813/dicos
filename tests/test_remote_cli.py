@@ -79,6 +79,14 @@ def test_doctor(remote):
     assert "timeout 15 git ls-remote https://github.com/git/git HEAD" in [shlex.split(cmd)[-1] for cmd in remote[1:]]
 
 
+def test_doctor_sinfo_count(remote, monkeypatch):
+    monkeypatch.setattr(conn, "run", lambda cfg, cmd: subprocess.CompletedProcess(
+        [], 0, "a100-al9\nv100-al9*\na100-al9\n" if "sinfo" in cmd else "ok\n", ""))
+    result = runner.invoke(app, ["doctor"], terminal_width=140)
+    assert result.exit_code == 0, result.output
+    assert "2 partitions" in result.output and "v100-al9" not in result.output
+
+
 def test_doctor_login_failure(remote, monkeypatch):
     attempts = []
     def fail(*a):
