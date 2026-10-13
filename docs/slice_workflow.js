@@ -21,7 +21,7 @@ const verdictSchema = {
 phase('Implement');
 let impl = await agent(
   `${base}\n\nTask: implement slice ${slice} ONLY.\n${brief}\n\nBoundary: write only inside /home/novis/research/dicos. Do not implement later slices. Do not touch ~/.dicos unless the brief says so.\nVerification (must run; report the summarized result): ${verify}\nWhen done: git add -A && git commit -m "${slice}: <summary>" (no co-author trailer). Report: files changed, verification result, any deviation from spec.`,
-  { agentType: 'general', label: `impl-${slice}` },
+  { agentType: 'general', model: 'cliproxyapi/gpt-6.1-sol', label: `impl-${slice}` },
 );
 
 const reviews = [];
@@ -46,6 +46,6 @@ for (let round = 1; round <= 3; round++) {
   phase('Implement');
   impl = await agent(
     `${base}\n\nFix ONLY these blocking review findings for slice ${slice}; no other changes.\nSpec review blocking: ${JSON.stringify(spec && spec.blocking)}\nCode review blocking: ${JSON.stringify(code && code.blocking)}\nRe-run verification: ${verify}\nCommit as "fix(${slice}): <summary>". Report what changed and the verification result.`,
-    { agentType: 'general', label: `fix-${slice}-r${round}` },
+    { agentType: 'general', model: 'cliproxyapi/gpt-6.1-sol', label: `fix-${slice}-r${round}` },
   );
 }
