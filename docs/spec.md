@@ -107,7 +107,7 @@ ID = `f"{prefix}-{seq}"`, seq = per-project `MAX(seq)+1`.
 
 | Command | Behaviour |
 |---|---|
-| `init [--user] [--jump ALIAS\|--no-jump] [--qr PATH] [--totp-secret-stdin] [--password-stdin] [--force]` | Wizard: username → TOTP (secret / otpauth URI / Google Authenticator export URI, or QR image path; reuse `dicos_login.otp`) → password (getpass) → jump selection (D5) → write config + credentials → print current TOTP for comparison → open master (real login) → detect workdir → save. Refuses to overwrite existing config without `--force`. |
+| `init [--user] [--jump ALIAS\|--no-jump] [--qr PATH] [--totp-secret-stdin] [--password-stdin] [--force] [--default-partition P] [--default-time T]` | Wizard: username → TOTP (secret / otpauth URI / Google Authenticator export URI, or QR image path; reuse `dicos_login.otp`) → password (getpass) → jump selection (D5) → write config + credentials → print current TOTP for comparison → open master (real login) → detect workdir → save → default partition (validated against partitions the account may use) and time limit from flags, or prompts on a TTY, saved to `defaults` → save. Refuses to overwrite existing config without `--force`. |
 | `doctor` | Rows: local files & modes, jump reachable, master login, `sinfo` works, account association, workdir writable, GitHub reachable from login node. Exit 1 if any fail. |
 | `status` | Table per partition the user's account may use (exclude partitions whose `AllowAccounts` doesn't contain the account, unless `ALL`): PARTITION, GRES, NODES idle/total, TIMELIMIT. `--all` shows excluded too. |
 | `run [-p PART] [--gpus N] [--cpus N] [--mem 32G] [-t 6h] [--sync] [--branch/--commit/--tag] -- CMD` | Resolve project, ship code, write job.sh, `sbatch`, record job, print `<id> (slurm <n>) queued on <partition>`. Time accepts `30m`, `6h`, `2d`, `1d12h`, or raw Slurm format. |
@@ -115,6 +115,7 @@ ID = `f"{prefix}-{seq}"`, seq = per-project `MAX(seq)+1`.
 | `list [-s STATUS] [--all]` | Refresh, table: ID, STATUS, PARTITION, GPUS, SLURM, CREATED, COMMAND (latest 20 unless `--all`). |
 | `show ID` | Refresh, all fields + `scontrol show job` reason when queued. |
 | `logs ID [-n 200] [-f]` | `tail -n` / `tail -F` of output.log through the master. |
+| `fetch ID PATH... [-o DEST]` | rsync (`--protect-args`, through the master) each PATH (relative to `jobs/<id>/src/`, or absolute) into DEST (default `./<id>/`). |
 | `wait ID [--timeout S] [--interval 15]` | Exit 0 succeeded, 1 failed, 2 cancelled, 3 lost, 124 timeout. |
 | `stop ID` | `scancel`; mark cancelled. |
 | `clean ID [-y]` | Terminal jobs only: remove remote `jobs/<id>`, `git worktree prune` for git mode. |
@@ -123,6 +124,7 @@ ID = `f"{prefix}-{seq}"`, seq = per-project `MAX(seq)+1`.
 | `code` | Print current TOTP. |
 | `logout` | `ssh -O exit` on the master. |
 | `update [--check]` | Same pattern as `lab update`. |
+| `feedback [TITLE] [--body TEXT]` | Same pattern as `lab feedback`: `gh issue create --repo novis10813/dicos` with the dicos version appended; no TITLE opens gh's editor (TTY only). |
 
 Any command needing the remote calls `ensure_master()` first: `ssh -S sock -O check` → if dead, open master
 (prompts automated; requires credentials). Master command:
@@ -134,7 +136,7 @@ user to run `ssh user@host` once manually. Mux client commands: `ssh -S <sock> -
 ## Not doing (v1)
 
 `--json` output, Windows native, DiCOSApps/Jupyter, legacy PanDA `dicos job`, file browser commands beyond
-`logs`, multi-cluster, automatic retries of failed logins, OS keyring.
+`logs` and `fetch`, multi-cluster, automatic retries of failed logins, OS keyring.
 
 ## Slices (each: implement → spec-review → code-review)
 

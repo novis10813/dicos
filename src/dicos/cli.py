@@ -67,6 +67,8 @@ def init(
     totp_secret_stdin: bool = typer.Option(False, "--totp-secret-stdin"),
     password_stdin: bool = typer.Option(False, "--password-stdin"),
     force: bool = typer.Option(False, "--force"),
+    default_partition: Optional[str] = typer.Option(None, "--default-partition", help="Saved as defaults.partition."),
+    default_time: Optional[str] = typer.Option(None, "--default-time", help="Saved as defaults.time, e.g. 6h."),
 ):
     """Initialize private configuration, credentials, and connection."""
     if (paths.home() / "config.yaml").exists() and not force:
@@ -111,12 +113,55 @@ def init(
         if workdir is not None:
             cfg.workdir = workdir
             config.save(cfg)
+            cfg.defaults = _ask_defaults(cfg, default_partition, default_time)
+            config.save(cfg)
     except (typer.Abort, EOFError):
         typer.echo("init cancelled: input required", err=True)
         raise typer.Exit(1) from None
     except (ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from None
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _ask_defaults(cfg, partition, time):
+    """Default partition and time limit: flags, else prompts on a terminal, else none."""
+    from dicos import slurm
+
+    interactive = _interactive()
+    if partition is None and time is None and not interactive:
+        return dict(cfg.defaults)
+    allowed = [name for name, _, ok in _partitions(cfg) if ok]
+    if partition is None and interactive:
+        typer.echo("Partitions for your account: " + ", ".join(allowed))
+    while True:
+        value = partition if partition is not None else (
+            typer.prompt("Default partition (empty = none)", default="", show_default=False) if interactive else "")
+        if not value or value in allowed:
+            break
+        if partition is not None:
+            raise ValueError(f"Partition {value} is not available to your account. See `dicos status`.")
+        typer.echo("Choose a listed partition, or leave it empty.")
+    while True:
+        limit = time if time is not None else (
+            typer.prompt("Default time limit (30m, 6h, 2d)", default="1h") if interactive else "")
+        try:
+            if limit:
+                slurm.parse_time(limit)
+            break
+        except ValueError:
+            if time is not None:
+                raise
+            typer.echo("Use a duration such as 30m, 6h, 2d, or Slurm format.")
+    defaults = dict(cfg.defaults)
+    defaults.update({key: v for key, v in (("partition", value), ("time", limit)) if v})
+    if defaults:
+        typer.echo("Saved defaults: " + ", ".join(f"{k}={v}" for k, v in defaults.items())
+                   + f" (edit {paths.home() / 'config.yaml'} to change)")
+    return defaults
 
 
 @app.command()
@@ -249,9 +294,8 @@ def doctor():
         raise typer.Exit(1)
 
 
-@app.command()
-def status(all_partitions: bool = typer.Option(False, "--all")):
-    """Show available partitions, or all partitions with --all."""
+def _partitions(cfg):
+    """[(name, sinfo details, allowed for the user's account)] from one remote call."""
     from dicos import slurm
 
     separator = "__DICOS_STATUS_SECTION__"
@@ -260,27 +304,35 @@ def status(all_partitions: bool = typer.Option(False, "--all")):
                "scontrol show partition -o && "
                f"printf '\\n{separator}\\n' && "
                "sacctmgr -n show assoc user=$USER format=account -P | head -1")
+    result = conn.run(cfg, command)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or f"Remote status failed (exit {result.returncode}).")
+    sections = result.stdout.split(separator)
+    if len(sections) != 3:
+        raise ValueError("Incomplete remote status response.")
+    info = slurm.parse_sinfo(sections[0])
+    partitions = {p["name"]: p for p in slurm.parse_partitions(sections[1])}
+    account = sections[2].strip().split("|", 1)[0].strip().casefold()
+    if not account:
+        raise ValueError("No Slurm account association found.")
+    rows = []
+    for name, details in info.items():
+        if name not in partitions:
+            raise ValueError(f"Missing account permissions for partition {name}.")
+        accounts = {a.casefold() for a in partitions[name]["allow_accounts"]}
+        rows.append((name, details, "all" in accounts or account in accounts))
+    return rows
+
+
+@app.command()
+def status(all_partitions: bool = typer.Option(False, "--all")):
+    """Show available partitions, or all partitions with --all."""
     try:
-        cfg = _remote_config()
-        result = conn.run(cfg, command)
-        if result.returncode:
-            raise ValueError(result.stderr.strip() or f"Remote status failed (exit {result.returncode}).")
-        sections = result.stdout.split(separator)
-        if len(sections) != 3:
-            raise ValueError("Incomplete remote status response.")
-        info = slurm.parse_sinfo(sections[0])
-        partitions = {p["name"]: p for p in slurm.parse_partitions(sections[1])}
-        account = sections[2].strip().split("|", 1)[0].strip().casefold()
-        if not account:
-            raise ValueError("No Slurm account association found.")
+        rows = _partitions(_remote_config())
         table = Table("PARTITION", "GRES", "NODES idle/total", "TIMELIMIT")
         if all_partitions:
             table.add_column("ALLOWED")
-        for name, details in info.items():
-            if name not in partitions:
-                raise ValueError(f"Missing account permissions for partition {name}.")
-            accounts = {a.casefold() for a in partitions[name]["allow_accounts"]}
-            allowed = "all" in accounts or account in accounts
+        for name, details, allowed in rows:
             if not allowed and not all_partitions:
                 continue
             nodes = details["nodes"]
@@ -465,6 +517,33 @@ def logs(
 
 
 @app.command()
+def fetch(
+    id: str,
+    paths: list[str] = typer.Argument(..., help="Paths relative to the job's src/ directory, or absolute."),
+    dest: Optional[Path] = typer.Option(None, "-o", "--output", help="Local directory (default ./<ID>)."),
+):
+    """Copy job outputs from the cluster to a local directory."""
+    import subprocess
+    from dicos.jobs import fetch_argv
+    from dicos.store import JobStore
+
+    try:
+        job = _job(JobStore(), id)
+        target = Path(id) if dest is None else dest
+        cfg = _remote_config()
+        argvs = [fetch_argv(cfg, job, path, target) for path in paths]
+        target.mkdir(parents=True, exist_ok=True)
+        for path, argv in zip(paths, argvs):
+            result = subprocess.run(argv, capture_output=True, text=True)
+            if result.returncode:
+                raise ValueError(f"fetch {path} failed: " + (result.stderr.strip() or f"rsync exit {result.returncode}"))
+            typer.echo(f"{path} -> {target}/{Path(path.rstrip('/')).name}")
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+
+
+@app.command()
 def stop(id: str):
     """Cancel a queued or running job."""
     from dicos.jobs import checked_run, now
@@ -599,3 +678,37 @@ def update(check: bool = typer.Option(False, "--check", help="Only report whethe
     typer.echo(f"dicos updated to {remote[:7]}")
     # The installer may have replaced this environment; exit without further imports.
     raise typer.Exit(0)
+
+
+FEEDBACK_REPO = "novis10813/dicos"
+
+
+@app.command()
+def feedback(
+    title: Optional[str] = typer.Argument(None, help="Issue title; omit to write it in gh's editor (needs a terminal)."),
+    body: str = typer.Option("", "--body", help="Issue content."),
+):
+    """Open a GitHub issue in novis10813/dicos using the system gh."""
+    import subprocess
+
+    def fail(message):
+        typer.echo(f"error: {message}", err=True)
+        raise typer.Exit(1)
+
+    if title is not None and not title.strip():
+        fail("Issue title must not be empty or whitespace.")
+    if title is None and not _interactive():
+        fail('Omitting the title requires an interactive terminal.\nUse: dicos feedback "Bug title" --body "What happened"')
+    metadata = f"dicos version: {__version__}"
+    argv = ["gh", "issue", "create", "--repo", FEEDBACK_REPO, "--body", f"{body}\n\n{metadata}" if body else metadata]
+    argv += ["--editor"] if title is None else ["--title", title]
+    try:
+        result = subprocess.run(argv)
+    except FileNotFoundError:
+        fail("GitHub CLI (gh) is required but was not found on PATH.\n"
+             "Install gh (https://cli.github.com/), run `gh auth login`, and retry,\n"
+             f"or open https://github.com/{FEEDBACK_REPO}/issues/new")
+    if result.returncode:
+        fail(f"gh issue create failed (exit {result.returncode}). See gh output above.\n"
+             "Check `gh auth status`, and check "
+             f"https://github.com/{FEEDBACK_REPO}/issues for an issue already created before retrying.")

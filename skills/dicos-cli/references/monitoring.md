@@ -50,6 +50,15 @@ dicos run --sync -p edr1-al9_short_serial -t 10m -- python3 job.py
 dicos wait job-3 --timeout 900; case $? in 0) echo ok;; 124) echo still running;; *) dicos logs job-3 -n 50;; esac
 ```
 
+## `dicos fetch ID PATH... [-o DEST]`
+
+Copies each PATH from the cluster into DEST (default `./<ID>/`) with rsync through the master. Relative paths are resolved against the job's working directory `<jobdir>/src/`; absolute paths (e.g. `/ceph/work/<group>/<user>/results`) are used as is. A directory is copied with its name (`out/` -> `./<ID>/out/`); `../output.log` fetches the log. Works while the job runs (partial copy) and fails after `dicos clean`. A missing path exits 1 with rsync's `No such file or directory`.
+
+```bash
+dicos fetch exp-4 checkpoints/ metrics.json
+dicos fetch exp-4 ../output.log -o ~/runs/exp-4
+```
+
 ## `dicos stop ID`
 
 Queued or running: `scancel <slurm_id>` (array element: `<arrayid>_<i>`), then the job is marked `cancelled`. Already terminal: prints `already finished` and exits 0.

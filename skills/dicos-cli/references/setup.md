@@ -28,6 +28,7 @@ Interactive steps, in order:
 4. Jump host: every `~/.ssh/config` Host alias plus "none (direct)" is probed for TCP reachability of `slurm-ui.twgrid.org:22`, a table is shown, and you choose a reachable one. Probing is skipped while a login failure is latched.
 5. Files are written (`credentials.json` first, then `config.yaml`), the latch is cleared, and the current TOTP code is printed so you can compare it with your authenticator app.
 6. Real login (opens the master), then remote workdir detection: `/ceph/work/<group>/<user>/dicos` where `<group>` matches your Slurm account case-insensitively, else `$HOME/dicos`. Detection has a 180 s limit; on timeout the saved files stay and you can rerun `dicos init --force`.
+7. Defaults: lists the partitions your account may use and asks for a default partition (empty = none; must be one of the list) and a default time limit (`1h`). Saved under `defaults:` in `config.yaml`. Skipped without a terminal unless `--default-partition` / `--default-time` are given.
 
 `init` is run by the user in their own terminal; agents follow [authentication.md](authentication.md). Non-interactive form, for the user's own scripts with secrets from a secret store (stdin lines are read in this order: password, then TOTP):
 
@@ -69,5 +70,14 @@ dicos exec -- 'sacct -u $USER -S today'
 dicos code                    # current 6-digit TOTP (waits if <3 s remain in the window)
 dicos logout                  # ssh -O exit on the master; clears the latch
 ```
+
+## Feedback
+
+```bash
+dicos feedback "fetch fails on symlinks" --body "What happened, command, output"
+dicos feedback            # write title and body in gh's editor (terminal only)
+```
+
+Opens an issue in `novis10813/dicos` through the GitHub CLI (`gh auth login` first) and appends the dicos version. Remove usernames, hostnames, and paths you do not want public: the repo is public. Never include credentials or TOTP codes.
 
 `exec` joins several argv words with shell quoting; a single argument is passed verbatim, so quote shell syntax as one string.

@@ -86,6 +86,16 @@ git -C {base} worktree add --quiet --detach {shlex.quote(jobdir + "/src")} {shle
 """
 
 
+def fetch_argv(cfg, job, path, dest):
+    """rsync one remote path (relative to the job's src/, or absolute) into dest."""
+    if not job["remote_dir"]:
+        raise ValueError(f"Job {job['id']} has no remote directory.")
+    source = path if path.startswith("/") else f"{job['remote_dir']}/src/{path}"
+    # --protect-args sends the path verbatim, so it needs no remote shell quoting.
+    return ["rsync", "-az", "--protect-args", "-e", shlex.join(conn.ssh_argv(cfg, None, tty=False)[:-1]),
+            f"{cfg.user}@{cfg.host}:{source.rstrip('/')}", str(dest) + "/"]
+
+
 def submit(store, cfg, root, name, project, request, commands, mode, sha=None, array=False):
     """Ship code once, submit one job (or one array job), and record one row per command."""
     if not cfg.workdir:

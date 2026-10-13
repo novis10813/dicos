@@ -78,6 +78,7 @@ dicos list                 # latest 20 (refreshes queued/running jobs first); --
 dicos show ID              # every field; adds Slurm Reason while queued
 dicos logs ID              # last 200 lines; -n 50; -f to follow (Ctrl-C stops following only)
 dicos wait ID --timeout 3600 --interval 30
+dicos fetch ID out/ metrics.json   # copy outputs to ./ID/ (paths relative to the job's src/, or absolute); -o DIR
 ```
 
 `wait` exit codes: `0` succeeded, `1` failed, `2` cancelled, `3` lost, `124` timeout. Remote/login errors also exit `1` with a message on stderr.
@@ -102,7 +103,7 @@ dicos logout                           # close the master (also clears a login l
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `init` | Create config, credentials, first login | `--user` `--jump ALIAS` \| `--no-jump` `--qr PATH` `--totp-secret-stdin` `--password-stdin` `--force` |
+| `init` | Create config, credentials, first login | `--user` `--jump ALIAS` \| `--no-jump` `--qr PATH` `--totp-secret-stdin` `--password-stdin` `--force` `--default-partition P` `--default-time T` |
 | `doctor` | Check files/modes, jump, login, sinfo, account, workdir, GitHub | — |
 | `status` | Partitions allowed for your account: GRES, idle/total nodes, time limit | `--all` (adds ALLOWED column) |
 | `run` | Submit one job | `-p` `--gpus N` `--cpus N` `--mem 32G` `-t 6h` `--sync` `--branch`\|`--tag`\|`--commit` `-- CMD` |
@@ -110,17 +111,19 @@ dicos logout                           # close the master (also clears a login l
 | `list` | Refresh and list jobs | `-s STATUS` `--all` |
 | `show` | Refresh and show one job | `ID` |
 | `logs` | Tail the job log | `-n N` `-f` |
+| `fetch` | Copy outputs to a local directory | `ID PATH...` `-o DEST` (default `./ID`) |
 | `wait` | Block until terminal | `--timeout S` `--interval S` (default 15) |
 | `stop` | Cancel a queued/running job | `ID` |
 | `clean` | Remove a finished job's remote directory | `-y` |
 | `ssh` / `exec` | Shell / command on the login node | `exec -- CMD` |
 | `code` / `logout` | Print TOTP / close master | — |
 | `update` | Reinstall from the git source | `--check` |
+| `feedback` | Open a GitHub issue in novis10813/dicos via `gh` | `[TITLE]` `--body TEXT` |
 
 ## 5. Things that surprise people
 
 1. **Partition names are not uniform**: `a100-al9`, `a100_short-al9`, `a100_long-al9`, `a100_devel-al9`, `v100-al9_short`, `b6000-al9_short`, `edr1-al9_short_serial` (CPU). Always confirm with `dicos status`; some partitions exclude your account.
-2. **A partition is required** for every job: `-p`, a sweep `partition:` key, or `defaults.partition` in `~/.dicos/config.yaml`.
+2. **A partition is required** for every job: `-p`, a sweep `partition:` key, or `defaults.partition` in `~/.dicos/config.yaml` (asked by `dicos init`).
 3. **Defaults** when nothing is set: `--gpus 0`, `--cpus 1`, `-t 1h`, no `--mem`. `--gpus N` becomes `--gres=gpu:N` (max 8 per node).
 4. **Git mode ships the pushed commit**, never local edits. Untracked files count as dirty. Use `--sync` to test uncommitted work.
 5. **Private GitHub repos** are cloned on the login node with your forwarded local ssh-agent: run `ssh-add` locally first.

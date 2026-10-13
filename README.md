@@ -55,12 +55,14 @@ Partition names are not uniform (`a100-al9`, `a100_short-al9`, `a100_devel-al9`,
 | `sweep FILE.yaml [same flags]` | Submit one Slurm array job, one record per grid point |
 | `list [-s STATUS] [--all]`, `show ID` | Refresh and inspect jobs |
 | `logs ID [-n 200] [-f]` | Tail the job log |
+| `fetch ID PATH... [-o DEST]` | Copy outputs (paths relative to the job's `src/`, or absolute) to `./<ID>/` |
 | `wait ID [--timeout S] [--interval 15]` | Exit 0 succeeded, 1 failed, 2 cancelled, 3 lost, 124 timeout |
 | `stop ID`, `clean ID [-y]` | Cancel, remove the remote job directory of a finished job |
 | `ssh`, `exec -- CMD` | Shell or command on the login node |
 | `update [--check]` | Reinstall from the git source via `uv tool install` |
+| `feedback [TITLE] [--body TEXT]` | Open a GitHub issue with `gh` |
 
-Time accepts `30m`, `6h`, `2d`, `1d12h`, or raw Slurm format. Defaults for `partition`, `time`, `gpus`, `cpus`, `mem` can be set under `defaults:` in `~/.dicos/config.yaml`. Per-project `setup:` replaces the default setup (install uv if missing, `uv sync` when `pyproject.toml` exists).
+Time accepts `30m`, `6h`, `2d`, `1d12h`, or raw Slurm format. Defaults for `partition`, `time`, `gpus`, `cpus`, `mem` can be set under `defaults:` in `~/.dicos/config.yaml`; `dicos init` asks for the default partition and time (or `--default-partition`, `--default-time`). Per-project `setup:` replaces the default setup (install uv if missing, `uv sync` when `pyproject.toml` exists).
 
 ## Examples
 
@@ -74,6 +76,7 @@ dicos run -p a100-al9 --gpus 1 --branch exp -- python train.py
 dicos run --sync -p edr1-al9_short_serial -t 10m -- python3 check.py
 
 dicos logs train-3 -f
+dicos fetch train-3 checkpoints/ metrics.json   # -> ./train-3/
 dicos wait train-3 --timeout 3600 && echo done
 dicos clean train-3 -y
 ```
