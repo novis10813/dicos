@@ -287,3 +287,143 @@ def status(all_partitions: bool = typer.Option(False, "--all")):
     except (conn.LoginError, ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from None
+
+
+@app.command("run", context_settings={"allow_extra_args": True})
+def run_job(
+    ctx: typer.Context,
+    sync: bool = typer.Option(False, "--sync"),
+    partition: Optional[str] = typer.Option(None, "-p", "--partition"),
+    gpus: Optional[int] = typer.Option(None, "--gpus", min=0),
+    cpus: Optional[int] = typer.Option(None, "--cpus", min=1),
+    mem: Optional[str] = typer.Option(None, "--mem"),
+    time: Optional[str] = typer.Option(None, "-t", "--time"),
+):
+    """Submit the working tree with --sync and a command after --."""
+    from dicos import jobs
+    from dicos.store import JobStore
+
+    if not sync:
+        typer.echo("git mode not implemented yet, use --sync", err=True)
+        raise typer.Exit(1)
+    if not ctx.args:
+        raise typer.BadParameter("Provide a command after --.")
+    try:
+        cfg = config.load()
+        if not cfg.workdir:
+            raise ValueError("Workdir missing: run dicos init.")
+        request = jobs.resources(cfg, partition, gpus, cpus, mem, time)
+        root, name, project = jobs.resolve_project(cfg)
+        cfg = _remote_config()
+        command = ctx.args[0] if len(ctx.args) == 1 else shlex.join(ctx.args)
+        job = jobs.submit_sync(JobStore(), cfg, root, name, project, request, command)
+        typer.echo(f"{job['id']} (slurm {job['slurm_id']}) queued on {job['partition']}")
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+
+
+def _job(store, id):
+    job = store.get(id)
+    if job is None:
+        raise ValueError(f"Unknown job: {id}")
+    return job
+
+
+@app.command("list")
+def list_jobs(
+    status: Optional[str] = typer.Option(None, "-s", "--status"),
+    show_all: bool = typer.Option(False, "--all"),
+):
+    """Refresh and list the latest 20 jobs, or all jobs with --all."""
+    from dicos.jobs import refresh
+    from dicos.store import JobStore
+
+    try:
+        store = JobStore()
+        cfg = _remote_config() if store.active() else config.load()
+        refresh(store, cfg)
+        table = Table("ID", "STATUS", "PARTITION", "GPUS", "SLURM", "CREATED", "COMMAND")
+        records = store.list(status, limit=None if show_all else 20)
+        table.columns[0].min_width = max((len(job["id"]) for job in records), default=2)
+        table.columns[0].no_wrap = True
+        for job in records:
+            command = job["command"] or ""
+            if len(command) > 60:
+                command = command[:57] + "..."
+            table.add_row(*[escape(str(value)) for value in (
+                job["id"], job["status"], job["partition"] or "-", job["gpus"],
+                job["slurm_id"] or "-", job["created_at"], command)])
+        Console().print(table)
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+
+
+@app.command()
+def show(id: str):
+    """Refresh and show every field of a job."""
+    import re
+    from dicos.jobs import checked_run, refresh
+    from dicos.store import JobStore
+
+    try:
+        store = JobStore()
+        _job(store, id)
+        cfg = _remote_config() if store.active() else config.load()
+        refresh(store, cfg)
+        job = _job(store, id)
+        table = Table.grid(padding=(0, 2))
+        for key, value in job.items():
+            table.add_row(key, escape(str(value)) if value is not None else "-")
+        if job["status"] == "queued" and job["slurm_id"]:
+            output = checked_run(cfg, "scontrol show job " + shlex.quote(job["slurm_id"]))
+            reason = re.search(r"\bReason=(\S+)", output)
+            table.add_row("Reason", escape(reason.group(1)) if reason else "-")
+        Console().print(table)
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+
+
+@app.command()
+def logs(
+    id: str,
+    lines: int = typer.Option(200, "-n", "--lines", min=0),
+    follow: bool = typer.Option(False, "-f", "--follow"),
+):
+    """Read output.log through the existing SSH master."""
+    from dicos.store import JobStore
+
+    try:
+        job = _job(JobStore(), id)
+        if not job["remote_dir"]:
+            raise ValueError(f"Job {id} has no remote directory.")
+        command = f"tail -n {lines} " + ("-F " if follow else "")
+        command += shlex.quote(job["remote_dir"] + "/output.log")
+        conn.exec_interactive(_remote_config(), command)
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+
+
+@app.command()
+def stop(id: str):
+    """Cancel a queued or running job."""
+    from dicos.jobs import checked_run, now
+    from dicos.store import JobStore
+
+    try:
+        store = JobStore()
+        job = _job(store, id)
+        if job["status"] not in {"queued", "running"}:
+            typer.echo(f"{id} already finished: {job['status']}")
+            return
+        if not job["slurm_id"]:
+            raise ValueError(f"Job {id} has no Slurm ID.")
+        checked_run(_remote_config(), "scancel " + shlex.quote(job["slurm_id"]))
+        store.update(id, status="cancelled", slurm_state="CANCELLED", finished_at=now())
+        typer.echo(f"{id} cancelled")
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None

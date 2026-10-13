@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 """
 _FIELDS = set("slurm_id mode commit_sha command partition gpus cpus mem time_limit status slurm_state exit_code error remote_dir created_at started_at finished_at".split())
 _TERMINAL = {"succeeded", "failed", "cancelled", "lost"}
-_TRANSITIONS = {"queued": {"running"} | _TERMINAL, "running": _TERMINAL}
+_TRANSITIONS = {"queued": {"running"} | _TERMINAL, "running": {"queued"} | _TERMINAL}
 
 
 class JobStore:

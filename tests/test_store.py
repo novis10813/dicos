@@ -85,8 +85,8 @@ def test_invalid_transitions_and_fields():
     id = store.add('demo', 'demo')
     store.update(id, status='running')
     store.update(id, status='running', started_at='now')
-    with pytest.raises(ValueError, match='Invalid transition'):
-        store.update(id, status='queued')
+    store.update(id, status='queued')  # Slurm can requeue a running job.
+    store.update(id, status='running')
     with pytest.raises(ValueError, match='Invalid status'):
         store.update(id, status='unknown')
     with pytest.raises(KeyError):
