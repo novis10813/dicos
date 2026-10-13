@@ -33,6 +33,26 @@ dicos init      # username, TOTP, password, jump host, first login, remote workd
 dicos doctor    # verify files, jump host, login, sinfo, account, workdir, GitHub
 ```
 
+### TOTP secret from Google Authenticator
+
+`dicos init` needs the TOTP secret, which the app does not show directly. Export it as a QR code:
+
+1. Tap the menu (≡).
+2. Tap **Transfer accounts** (轉移帳戶).
+3. Tap **Export accounts** (匯出帳戶).
+4. Select only the DiCOS account and tap **Next**. The app shows a QR code.
+
+<p>
+<img src="assets/totp-export-1.jpg" width="200" alt="Step 1: menu">
+<img src="assets/totp-export-2.jpg" width="200" alt="Step 2: Transfer accounts">
+<img src="assets/totp-export-3.jpg" width="200" alt="Step 3: Export accounts">
+<img src="assets/totp-export-4.jpg" width="200" alt="Step 4: select the DiCOS account">
+</p>
+
+Get that QR code onto your laptop as an image (a screenshot sent to yourself, or a photo of the screen). Run `dicos init`, leave the `TOTP secret or URI` prompt empty, and enter the image path (or pass `--qr PATH`). If the app offers to remove the exported account from the phone, keep it. `init` prints the current code; check that it matches the app.
+
+The QR image is your second factor. Delete it after `init`, and never commit it or paste it into a chat with an agent.
+
 `init` probes every `~/.ssh/config` Host alias (and a direct connection) for reachability of `slurm-ui.twgrid.org:22`, prints the current TOTP for comparison with your app, opens the SSH master, and picks `/ceph/work/<group>/<user>/dicos` (fallback `$HOME/dicos`). Scriptable: `--user`, `--jump ALIAS|--no-jump`, `--qr PATH`, `--password-stdin`, `--totp-secret-stdin` (password line first), `--force`.
 
 ## Safety
