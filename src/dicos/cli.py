@@ -40,7 +40,10 @@ def _choose_account(accounts: list[otp.OtpAccount]) -> otp.OtpAccount:
     for i, account in enumerate(accounts, 1):
         typer.echo(f"{i}: {account.issuer} {account.name}")
     while True:
-        index = typer.prompt("Account number", type=int)
+        try:
+            index = typer.prompt("Account number", type=int)
+        except (typer.Abort, EOFError):
+            raise ValueError("Account selection requires input. Run init interactively to choose an account.") from None
         if 1 <= index <= len(accounts):
             return accounts[index - 1]
         typer.echo("Choose a listed account number.")
@@ -69,7 +72,8 @@ def init(
         password = _stdin_line("password") if password_stdin else None
         secret_input = _stdin_line("TOTP") if totp_secret_stdin else None
         username = user if user is not None else typer.prompt("Username")
-        if not username.strip():
+        username = username.strip()
+        if not username:
             raise ValueError("Username must not be empty.")
         if qr is not None:
             secret_input = otp.decode_qr(str(qr))
@@ -86,8 +90,8 @@ def init(
         cfg = config.Config(user=username, jump=selected_jump)
         creds = credentials.Credentials(password=password, totp_secret=account.secret)
         code_value = otp.current_code(creds.totp_secret)
-        config.save(cfg)
         credentials.save(creds)
+        config.save(cfg)
         typer.echo(f"Current TOTP code: {code_value}")
         workdir = init_net.connect_and_detect(cfg, creds)
         if workdir is not None:

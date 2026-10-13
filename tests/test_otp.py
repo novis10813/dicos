@@ -2,6 +2,7 @@ import base64
 import urllib.parse
 
 import pyotp
+import pytest
 
 from dicos.otp import parse_otpauth
 
@@ -78,3 +79,74 @@ def test_qr_decode(tmp_path):
     path = tmp_path / "qr.png"
     Image.fromarray(zxingcpp.write_barcode_to_image(barcode, scale=4)).save(path)
     assert decode_qr(str(path)) == text
+
+
+def _export_uri(entry: bytes) -> str:
+    data = base64.b64encode(_field(1, entry)).decode()
+    return "otpauth-migration://offline?data=" + urllib.parse.quote(data)
+
+
+@pytest.mark.parametrize("field,value", [(4, 2), (4, 3), (4, 4), (5, 2), (5, 3)])
+def test_migration_rejects_unsupported_parameters(field, value):
+    from dicos.otp import parse_migration
+    secret = b"synthetic-test"
+    entry = _field(1, secret) + _field(6, 2) + _field(field, value)
+    for parse in (parse_migration, parse_otpauth):
+        with pytest.raises(ValueError) as error:
+            parse(_export_uri(entry))
+        assert secret.decode() not in str(error.value)
+        assert base64.b32encode(secret).decode().rstrip("=") not in str(error.value)
+
+
+@pytest.mark.parametrize("value", [None, 0, 1])
+def test_migration_accepts_supported_parameters(value):
+    entry = _field(1, b"synthetic-test") + _field(6, 2)
+    if value is not None:
+        entry += _field(4, value) + _field(5, value)
+    assert len(parse_otpauth(_export_uri(entry))) == 1
+
+
+def test_migration_skips_non_totp():
+    entry = _field(1, b"synthetic-test") + _field(6, 1)
+    assert parse_otpauth(_export_uri(entry)) == []
+
+
+@pytest.mark.parametrize("kind,query", [
+    ("hotp", ""), ("unknown", ""), ("totp", "&algorithm=SHA256"),
+    ("totp", "&algorithm=MD5"), ("totp", "&digits=8"), ("totp", "&digits=5"),
+])
+def test_otpauth_rejects_unsupported_parameters(kind, query):
+    secret = "JBSWY3DPEHPK3PXP"
+    with pytest.raises(ValueError) as error:
+        parse_otpauth(f"otpauth://{kind}/test?secret={secret}{query}")
+    assert secret not in str(error.value)
+
+
+@pytest.mark.parametrize("query", ["", "&algorithm=SHA1&digits=6", "&algorithm=sha1", "&algorithm=ShA1"])
+def test_otpauth_accepts_supported_parameters(query):
+    assert len(parse_otpauth("otpauth://totp/test?secret=JBSWY3DPEHPK3PXP" + query)) == 1
+
+
+@pytest.mark.parametrize("payload", [b"\x80", b"\x08", b"\x08\x80", b"\x0a", b"\x0a\x80", b"\x0a\x02x"])
+def test_protobuf_rejects_truncated_fields(payload):
+    from dicos.otp import _parse_fields
+    with pytest.raises(ValueError, match="Truncated protobuf"):
+        _parse_fields(payload)
+    uri = "otpauth-migration://offline?data=" + urllib.parse.quote(base64.b64encode(payload).decode())
+    with pytest.raises(ValueError):
+        parse_otpauth(uri)
+
+
+def test_protobuf_varint_bounds():
+    from dicos.otp import _read_varint
+    with pytest.raises(ValueError, match="Truncated protobuf varint"):
+        _read_varint(b"", 0)
+    assert _read_varint(b"\xac\x02", 0) == (300, 2)
+
+
+def test_migration_raw_plus():
+    entry = _field(1, b"\xfe" * 9) + _field(6, 2)
+    uri = _export_uri(entry)
+    raw_uri = urllib.parse.unquote(uri)
+    assert "+" in raw_uri
+    assert parse_otpauth(raw_uri) == parse_otpauth(uri)

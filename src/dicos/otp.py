@@ -18,6 +18,8 @@ class OtpAccount:
 def _read_varint(buf: bytes, i: int) -> tuple[int, int]:
     shift = result = 0
     while True:
+        if i >= len(buf):
+            raise ValueError("Truncated protobuf varint.")
         b = buf[i]
         i += 1
         result |= (b & 0x7F) << shift
@@ -37,6 +39,8 @@ def _parse_fields(buf: bytes) -> list[tuple[int, int | bytes]]:
             val, i = _read_varint(buf, i)
         elif wire == 2:
             n, i = _read_varint(buf, i)
+            if n > len(buf) - i:
+                raise ValueError("Truncated protobuf length-delimited field.")
             val, i = buf[i : i + n], i + n
         else:
             raise ValueError(f"unsupported protobuf wire type {wire}")
@@ -46,16 +50,18 @@ def _parse_fields(buf: bytes) -> list[tuple[int, int | bytes]]:
 
 def _parse_migration(uri: str) -> list[OtpAccount]:
     """Decode otpauth-migration://offline?data=... (Google Authenticator export)."""
-    data = urllib.parse.parse_qs(urllib.parse.urlparse(uri).query)["data"][0]
+    data = urllib.parse.parse_qs(urllib.parse.urlparse(uri).query)["data"][0].replace(" ", "+")
     payload = base64.b64decode(data + "=" * (-len(data) % 4))
     accounts = []
     for num, val in _parse_fields(payload):
         if num != 1:
             continue
         f = dict(_parse_fields(val))
-        # Only TOTP (type 2), SHA1 (algorithm 0/1), 6 digits (0/1) is supported.
+        # Skip non-TOTP entries. Reject algorithms/digits other than unspecified or SHA1/SIX.
         if f.get(6, 2) != 2:
             continue
+        if f.get(4, 0) not in (0, 1) or f.get(5, 0) not in (0, 1):
+            raise ValueError("Unsupported TOTP algorithm or digit count.")
         accounts.append(
             OtpAccount(
                 name=f.get(2, b"").decode(),
@@ -74,6 +80,12 @@ def _parse_otpauth(uri: str) -> list[OtpAccount]:
     if uri.startswith("otpauth://"):
         p = urllib.parse.urlparse(uri)
         q = urllib.parse.parse_qs(p.query)
+        if p.netloc != "totp":
+            raise ValueError("Unsupported OTP type.")
+        if q.get("algorithm", ["SHA1"])[0].upper() != "SHA1":
+            raise ValueError("Unsupported TOTP algorithm.")
+        if q.get("digits", ["6"])[0] != "6":
+            raise ValueError("Unsupported TOTP digit count.")
         label = urllib.parse.unquote(p.path.lstrip("/"))
         return [OtpAccount(name=label, issuer=q.get("issuer", [""])[0], secret=q["secret"][0])]
     secret = uri.replace(" ", "").upper()

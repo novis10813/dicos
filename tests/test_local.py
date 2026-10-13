@@ -3,6 +3,7 @@ import re
 import stat
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from dicos import config, credentials, init_net, otp, paths
@@ -181,3 +182,46 @@ def test_missing_stdin():
     result = runner.invoke(app, ["init", "--user", "alice", "--no-jump", "--password-stdin", "--totp-secret-stdin"], input="synthetic-password\n")
     assert result.exit_code == 1 and "Missing TOTP line" in result.output
     assert not paths.home().exists()
+
+
+def test_init_credentials_saved_before_config(private_home, monkeypatch):
+    save_config = config.save
+    calls = []
+
+    def check_config(cfg):
+        assert credentials.load().password == "synthetic-password"
+        calls.append(True)
+        save_config(cfg)
+
+    monkeypatch.setattr(config, "save", check_config)
+    monkeypatch.setattr(init_net, "connect_and_detect", lambda cfg, creds: None)
+    result = runner.invoke(app, ["init", "--user", " alice ", "--no-jump", "--password-stdin", "--totp-secret-stdin"], input="synthetic-password\n" + SECRET + "\n")
+    assert result.exit_code == 0, result.output
+    assert calls == [True]
+    assert config.load().user == "alice"
+
+
+def test_init_credentials_failure_does_not_save_config(private_home, monkeypatch):
+    def fail(creds):
+        raise OSError("Cannot save credentials.")
+
+    monkeypatch.setattr(credentials, "save", fail)
+    result = runner.invoke(app, ["init", "--user", "alice", "--no-jump", "--password-stdin", "--totp-secret-stdin"], input="synthetic-password\n" + SECRET + "\n")
+    assert result.exit_code == 1
+    assert "Cannot save credentials" in result.output
+    assert not (private_home / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("failure", [None, EOFError, typer.Abort])
+def test_init_account_selection_exhausted(private_home, monkeypatch, failure):
+    accounts = [otp.OtpAccount("first", "", SECRET), otp.OtpAccount("second", "", SECRET)]
+    monkeypatch.setattr(otp, "parse_otpauth", lambda uri: accounts)
+    if failure is not None:
+        def fail(*args, **kwargs):
+            raise failure()
+        monkeypatch.setattr("dicos.cli.typer.prompt", fail)
+    result = runner.invoke(app, ["init", "--user", "alice", "--no-jump", "--password-stdin", "--totp-secret-stdin"], input="synthetic-password\n" + SECRET + "\n")
+    assert result.exit_code == 1
+    assert "Account selection requires input" in result.output
+    assert "Aborted!" not in result.output
+    assert not private_home.exists()
