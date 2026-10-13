@@ -108,8 +108,8 @@ def refresh(store, cfg):
     queue, accounting = {}, {}
     if ids:
         quoted = shlex.quote(ids)
-        command = (f"squeue -h -j {quoted} -o '%i|%T' && "
-                   f"printf '\\n{REFRESH_MARKER}\\n' && "
+        command = (f"squeue -h -j {quoted} -o '%i|%T' 2>/dev/null || true; "
+                   f"printf '\\n{REFRESH_MARKER}\\n'; "
                    f"sacct -j {quoted} -P -n -o JobID,State,ExitCode,Start,End")
         output = checked_run(cfg, command)
         sections = output.split(REFRESH_MARKER)

@@ -205,6 +205,31 @@ def test_refresh(remote, monkeypatch, state, status, code):
     assert '999' not in calls[0][0]
 
 
+@pytest.mark.parametrize('accounting,status', [
+    ('123|COMPLETED|0:0|2026-10-13T00:00:00|2026-10-13T00:01:00\n', 'succeeded'),
+    ('', 'lost'),
+])
+def test_refresh_squeue_invalid_job(remote, monkeypatch, accounting, status):
+    cfg, calls = remote
+    store = JobStore()
+    id = store.add('demo', 'demo', slurm_id='123')
+    shell = ("squeue() { echo 'slurm_load_jobs error: Invalid job id specified' >&2; return 1; }; "
+             f"sacct() {{ printf %s {shlex.quote(accounting)}; }}; ")
+
+    def run(cfg, cmd, input=None):
+        calls.append((cmd, input))
+        return subprocess.run(shell + cmd, shell=True, capture_output=True, text=True)
+
+    monkeypatch.setattr(conn, 'run', run)
+    jobs.refresh(store, cfg)
+    job = store.get(id)
+    assert job['status'] == status
+    assert job['slurm_state'] == ('COMPLETED' if accounting else None)
+    assert job['exit_code'] == (0 if accounting else None)
+    assert job['finished_at']
+    assert len(calls) == 1
+
+
 def test_refresh_batched(remote, monkeypatch):
     cfg, calls = remote
     store = JobStore()
