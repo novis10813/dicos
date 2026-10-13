@@ -37,10 +37,10 @@ def probe_jumps(candidates: list[str | None], host: str = HOST) -> dict[str | No
         return dict(zip(candidates, pool.map(probe, candidates)))
 
 
-def select_jump(jump: str | None = None, no_jump: bool = False) -> str | None:
+def select_jump(jump: str | None = None, no_jump: bool = False, *, probe: bool = True) -> str | None:
     if jump is not None or no_jump:
         candidate = jump if not no_jump else None
-        if not probe_jumps([candidate])[candidate]:
+        if probe and not probe_jumps([candidate])[candidate]:
             raise ValueError(f"{'Jump host ' + candidate if candidate else 'Direct connection'} cannot reach {HOST}:22.")
         return candidate
     aliases = []
@@ -52,11 +52,12 @@ def select_jump(jump: str | None = None, no_jump: bool = False) -> str | None:
                 for alias in parts[1:]:
                     if not any(char in alias for char in "*?![") and alias not in aliases:
                         aliases.append(alias)
-    results = probe_jumps([None, *aliases])
-    table = Table("JUMP", "STATUS")
-    for candidate, reachable in results.items():
-        table.add_row(candidate or "none (direct)", "[green]ok[/]" if reachable else "[red]FAIL[/]")
-    Console().print(table)
+    results = probe_jumps([None, *aliases]) if probe else dict.fromkeys([None, *aliases], True)
+    if probe:
+        table = Table("JUMP", "STATUS")
+        for candidate, reachable in results.items():
+            table.add_row(candidate or "none (direct)", "[green]ok[/]" if reachable else "[red]FAIL[/]")
+        Console().print(table)
     reachable = [alias for alias in aliases if results[alias]]
     if results[None]:
         reachable.append(None)

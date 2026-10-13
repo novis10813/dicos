@@ -56,18 +56,29 @@ def ensure_master(cfg: Config, creds: Credentials) -> None:
                 + "\nFix credentials with `dicos init --force` or run `dicos logout` to allow one new attempt."
             )
         try:
-            _login(cfg, creds, home)
-        except Exception as exc:
+            paths.write_private(marker, datetime.now(timezone.utc).isoformat()
+                                + "\nlogin attempt in progress or interrupted\n")
+        except OSError:
+            raise LoginError("Could not record the login latch. No login attempted.") from None
+        secrets = [creds.password, creds.totp_secret]
+        try:
+            _login(cfg, creds, home, secrets)
+            marker.unlink(missing_ok=True)
+        except BaseException as exc:
             reason = str(exc) if isinstance(exc, LoginError) else "Login failed (" + type(exc).__name__ + ")."
-            for secret in (creds.password, creds.totp_secret):
+            for secret in secrets:
                 if secret:
                     reason = reason.replace(secret, "[redacted]")
-            paths.write_private(marker, datetime.now(timezone.utc).isoformat() + "\n" + reason + "\n")
+            try:
+                paths.write_private(marker, datetime.now(timezone.utc).isoformat() + "\n" + reason + "\n")
+            except OSError:
+                pass  # The write-before-attempt marker still blocks another login.
+            if not isinstance(exc, Exception):
+                raise
             raise LoginError(reason) from None
-        marker.unlink(missing_ok=True)
 
 
-def _login(cfg: Config, creds: Credentials, home) -> None:
+def _login(cfg: Config, creds: Credentials, home, secrets: list[str] | None = None) -> None:
     argv = ["ssh", "-M", "-N", "-f", "-o", f"ControlPath={home / 'cm.sock'}",
             "-o", "ControlPersist=8h", "-o", "ServerAliveInterval=60",
             "-o", "PreferredAuthentications=keyboard-interactive,password",
@@ -83,7 +94,8 @@ def _login(cfg: Config, creds: Credentials, home) -> None:
     deadline = time.monotonic() + LOGIN_TIMEOUT
     seen = set()
     output = b""
-    secrets = [creds.password, creds.totp_secret]
+    if secrets is None:
+        secrets = [creds.password, creds.totp_secret]
 
     def failure(reason: str) -> LoginError:
         text = output.decode(errors="replace")

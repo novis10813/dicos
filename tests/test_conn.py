@@ -226,3 +226,79 @@ def test_close_failure(monkeypatch, missing):
 
     monkeypatch.setattr(conn.subprocess, "run", run)
     assert conn.close(CFG) is False
+
+
+def test_latch_write_failure_no_spawn(monkeypatch):
+    monkeypatch.setattr(conn, "is_alive", lambda cfg: False)
+    calls = []
+    monkeypatch.setattr(conn.pexpect, "spawn", lambda *a, **kw: calls.append(True))
+
+    def fail(*args):
+        raise OSError("cannot write")
+
+    monkeypatch.setattr(paths, "write_private", fail)
+    with pytest.raises(conn.LoginError, match="No login attempted"):
+        conn.ensure_master(CFG, CREDS)
+    assert calls == []
+
+
+@pytest.mark.parametrize("rewrite_fails", [False, True])
+def test_interrupted_login_latched(monkeypatch, rewrite_fails):
+    monkeypatch.setattr(conn, "is_alive", lambda cfg: False)
+    calls = []
+    write = paths.write_private
+
+    def record(marker, text):
+        if calls and rewrite_fails:
+            raise OSError("cannot rewrite")
+        write(marker, text)
+
+    def interrupted(*args):
+        assert "login attempt in progress or interrupted" in (paths.home() / "login.failed").read_text()
+        calls.append(True)
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(paths, "write_private", record)
+    monkeypatch.setattr(conn, "_login", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        conn.ensure_master(CFG, CREDS)
+    text = (paths.home() / "login.failed").read_text()
+    assert ("interrupted" if rewrite_fails else "KeyboardInterrupt") in text
+    with pytest.raises(conn.LoginError, match="previous login failed"):
+        conn.ensure_master(CFG, CREDS)
+    assert calls == [True]
+
+
+def test_generated_codes_redacted_on_login_error(fake_ssh, monkeypatch):
+    codes = ["123456", "654321"]
+    monkeypatch.setattr(conn.otp, "current_code", lambda secret: codes[0])
+    spawn = conn.pexpect.spawn
+
+    def failing_spawn(*args, **kwargs):
+        child = spawn(*args, **kwargs)
+        send = child.sendline
+
+        def sendline(value):
+            if value == codes[0]:
+                # Simulate a transport LoginError after code generation.
+                raise conn.LoginError("transport " + " ".join([CREDS.password, SECRET, *codes]))
+            return send(value)
+
+        child.sendline = sendline
+        return child
+
+    # Track another generated code at the login boundary as well.
+    login = conn._login
+
+    def tracked_login(cfg, creds, home, secrets):
+        secrets.append(codes[1])
+        login(cfg, creds, home, secrets)
+
+    monkeypatch.setattr(conn.pexpect, "spawn", failing_spawn)
+    monkeypatch.setattr(conn, "_login", tracked_login)
+    with pytest.raises(conn.LoginError) as error:
+        conn.ensure_master(CFG, CREDS)
+    text = str(error.value) + (paths.home() / "login.failed").read_text()
+    for secret in [CREDS.password, SECRET, *codes]:
+        assert secret not in text
+    assert "transport" in text

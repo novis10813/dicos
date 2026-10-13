@@ -1,6 +1,8 @@
 """DiCOS local setup and TOTP commands."""
 
 import sys
+import fcntl
+import os
 import shlex
 import stat
 from pathlib import Path
@@ -50,7 +52,7 @@ def _choose_account(accounts: list[otp.OtpAccount]) -> otp.OtpAccount:
         try:
             index = typer.prompt("Account number", type=int)
         except (typer.Abort, EOFError):
-            raise ValueError("Account selection requires input. Run init interactively to choose an account.") from None
+            raise ValueError("init cancelled: input required") from None
         if 1 <= index <= len(accounts):
             return accounts[index - 1]
         typer.echo("Choose a listed account number.")
@@ -93,20 +95,21 @@ def init(
             password = typer.prompt("Password", hide_input=True)
         if not password:
             raise ValueError("Password must not be empty.")
-        selected_jump = init_net.select_jump(jump=jump, no_jump=no_jump) if jump is not None or no_jump else init_net.select_jump()
+        selected_jump = init_net.select_jump(jump=jump, no_jump=no_jump, probe=False)
         cfg = config.Config(user=username, jump=selected_jump)
         creds = credentials.Credentials(password=password, totp_secret=account.secret)
         code_value = otp.current_code(creds.totp_secret)
         credentials.save(creds)
         config.save(cfg)
         (paths.home() / "login.failed").unlink(missing_ok=True)
+        init_net.select_jump(jump=selected_jump, no_jump=selected_jump is None)
         typer.echo(f"Current TOTP code: {code_value}")
         workdir = init_net.connect_and_detect(cfg, creds)
         if workdir is not None:
             cfg.workdir = workdir
             config.save(cfg)
     except (typer.Abort, EOFError):
-        typer.echo("Initialization requires input. Run init interactively to choose a jump host.", err=True)
+        typer.echo("init cancelled: input required", err=True)
         raise typer.Exit(1) from None
     except (ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
@@ -152,13 +155,18 @@ def exec_command(ctx: typer.Context):
 def logout():
     """Close the existing master without opening a new connection."""
     try:
-        marker = paths.home() / "login.failed"
-        failed = marker.exists()
-        marker.unlink(missing_ok=True)
-        if not (paths.home() / "config.yaml").exists():
-            running = False
-        else:
-            running = conn.close(config.load())
+        home = paths.ensure_home()
+        fd = os.open(home / "master.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        with os.fdopen(fd, "r+") as lock:
+            os.fchmod(lock.fileno(), 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            marker = home / "login.failed"
+            failed = marker.exists()
+            marker.unlink(missing_ok=True)
+            if not (home / "config.yaml").exists():
+                running = False
+            else:
+                running = conn.close(config.load())
         if running:
             typer.echo("Logged out.")
         elif failed:
@@ -182,6 +190,12 @@ def doctor():
         table.add_row(name, "[green]ok[/]" if ok else "[red]FAIL[/]", escape(detail))
 
     home = paths.home()
+    marker = home / "login.failed"
+    if marker.exists():
+        row("login latch", False, marker.read_text(encoding="utf-8").strip()
+            + "\nFix credentials with `dicos init --force` or run `dicos logout` to allow one new attempt.")
+        Console().print(table)
+        raise typer.Exit(1)
     local_ok = home.is_dir() and stat.S_IMODE(home.stat().st_mode) == 0o700
     details = []
     if not local_ok:

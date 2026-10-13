@@ -171,7 +171,7 @@ def test_init_qr(monkeypatch):
 def test_init_interactive_qr(monkeypatch):
     seen = []
     monkeypatch.setattr(otp, "decode_qr", lambda path: seen.append(path) or SECRET)
-    monkeypatch.setattr(init_net, "select_jump", lambda: "lab")
+    monkeypatch.setattr(init_net, "select_jump", lambda **kw: "lab")
     result = runner.invoke(app, ["init"], input="alice\n\nfake.png\nsynthetic-password\n")
     assert result.exit_code == 0, result.output
     assert seen == ["fake.png"] and config.load().jump == "lab"
@@ -228,7 +228,7 @@ def test_init_account_selection_exhausted(private_home, monkeypatch, failure):
         monkeypatch.setattr("dicos.cli.typer.prompt", fail)
     result = runner.invoke(app, ["init", "--user", "alice", "--no-jump", "--password-stdin", "--totp-secret-stdin"], input="synthetic-password\n" + SECRET + "\n")
     assert result.exit_code == 1
-    assert "Account selection requires input" in result.output
+    assert "init cancelled: input required" in result.output
     assert "Aborted!" not in result.output
     assert not private_home.exists()
 
@@ -256,6 +256,57 @@ def test_init_jump_prompt_exhausted(private_home, monkeypatch, failure):
     result = runner.invoke(app, ["init", "--user", "alice", "--password-stdin", "--totp-secret-stdin"],
                            input="synthetic-password\n" + SECRET + "\n")
     assert result.exit_code == 1
-    assert "Initialization requires input" in result.output
+    assert "init cancelled: input required" in result.output
     assert "Aborted!" not in result.output
     assert not private_home.exists()
+
+
+@pytest.mark.parametrize("save_fails", [False, True])
+def test_init_latched_probes_only_after_saving(monkeypatch, save_fails):
+    config.save(config.Config("original"))
+    marker = paths.home() / "login.failed"
+    paths.write_private(marker, "stale")
+    calls = []
+    save = credentials.save
+
+    def save_creds(creds):
+        assert marker.exists()
+        if save_fails:
+            raise OSError("cannot save")
+        save(creds)
+
+    def probe(candidates, **kwargs):
+        assert not marker.exists()
+        assert credentials.load().password == "synthetic-password"
+        assert config.load().user == "alice"
+        calls.append(candidates)
+        return dict.fromkeys(candidates, True)
+
+    monkeypatch.setattr(credentials, "save", save_creds)
+    monkeypatch.setattr(init_net, "probe_jumps", probe)
+    result = runner.invoke(app, ["init", "--force", "--user", "alice", "--no-jump",
+                                 "--password-stdin", "--totp-secret-stdin"],
+                           input="synthetic-password\n" + SECRET + "\n")
+    assert result.exit_code == int(save_fails), result.output
+    assert marker.exists() == save_fails
+    assert calls == ([] if save_fails else [[None]])
+
+
+@pytest.mark.parametrize("prompt", ["Username", "TOTP", "QR", "Password"])
+@pytest.mark.parametrize("failure", [EOFError, typer.Abort])
+def test_init_all_prompt_cancellations(monkeypatch, prompt, failure):
+    def answer(label, **kwargs):
+        if label.startswith(prompt if prompt != "QR" else "QR image"):
+            raise failure()
+        if label == "Username":
+            return "alice"
+        if label.startswith("TOTP"):
+            return "" if prompt == "QR" else SECRET
+        return "synthetic-password"
+
+    monkeypatch.setattr("dicos.cli.typer.prompt", answer)
+    result = runner.invoke(app, ["init", "--no-jump"])
+    assert result.exit_code == 1
+    assert "init cancelled: input required" in result.output
+    assert "jump host" not in result.output
+    assert not paths.home().exists()

@@ -164,3 +164,40 @@ def test_logout_failed_exit(remote, monkeypatch):
     monkeypatch.setattr(conn, "close", close_master)
     result = runner.invoke(app, ["logout"])
     assert result.exit_code == 0 and "could not be closed" in result.output
+
+
+def test_doctor_latch_no_network(remote, monkeypatch):
+    paths.write_private(paths.home() / "login.failed", "2026-10-13T00:00:00+00:00\ninterrupted")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("latched doctor must not touch the network")
+
+    monkeypatch.setattr(init_net, "probe_jumps", forbidden)
+    monkeypatch.setattr(conn, "ensure_master", forbidden)
+    monkeypatch.setattr(conn, "run", forbidden)
+    result = runner.invoke(app, ["doctor"], terminal_width=180)
+    assert result.exit_code == 1, result.output
+    for text in ["login latch", "FAIL", "2026-10-13", "interrupted", "dicos init --force", "dicos logout"]:
+        assert text in result.output
+    assert not remote
+
+
+def test_logout_holds_master_lock(remote, monkeypatch):
+    import fcntl
+
+    paths.write_private(paths.home() / "login.failed", "stale")
+    unlink = type(paths.home()).unlink
+    checked = []
+
+    def locked_unlink(path, *args, **kwargs):
+        if path.name == "login.failed":
+            with (paths.home() / "master.lock").open() as lock:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            checked.append(True)
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(paths.home()), "unlink", locked_unlink)
+    result = runner.invoke(app, ["logout"])
+    assert result.exit_code == 0, result.output
+    assert checked == [True]
