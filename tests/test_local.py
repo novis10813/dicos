@@ -13,6 +13,13 @@ SECRET = "JBSWY3DPEHPK3PXP"  # Synthetic test fixture, not a live credential.
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def stub_network(monkeypatch):
+    monkeypatch.setattr(init_net, "probe_jumps", lambda candidates, **kw: dict.fromkeys(candidates, True))
+    monkeypatch.setattr(init_net, "connect_and_detect", lambda cfg, creds: None)
+
+
+
 def test_home_modes(private_home):
     assert paths.ensure_home() == private_home
     assert stat.S_IMODE(private_home.stat().st_mode) == 0o700
@@ -168,7 +175,6 @@ def test_init_interactive_qr(monkeypatch):
     result = runner.invoke(app, ["init"], input="alice\n\nfake.png\nsynthetic-password\n")
     assert result.exit_code == 0, result.output
     assert seen == ["fake.png"] and config.load().jump == "lab"
-    assert "Remote verification is not yet implemented" in result.output
     assert SECRET not in result.output and "synthetic-password" not in result.output
 
 
