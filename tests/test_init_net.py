@@ -64,9 +64,9 @@ def test_detect(monkeypatch):
     creds = credentials.Credentials("synthetic", "JBSWY3DPEHPK3PXP")
     calls = []
     monkeypatch.setattr(conn, "ensure_master", lambda *a: calls.append("master"))
-    monkeypatch.setattr(conn, "run", lambda cfg, cmd: calls.append(cmd) or subprocess.CompletedProcess([], 0, "/home/alice/dicos\n", ""))
+    monkeypatch.setattr(conn, "run", lambda cfg, cmd, **kw: calls.append((cmd, kw)) or subprocess.CompletedProcess([], 0, "/home/alice/dicos\n", ""))
     assert init_net.connect_and_detect(cfg, creds) == "/home/alice/dicos"
-    assert calls == ["master", init_net.DETECT_WORKDIR]
+    assert calls == ["master", ("bash -s", {"input": init_net.DETECT_WORKDIR})]
 
 
 def test_detect_login_failure(monkeypatch, capsys):
@@ -98,7 +98,7 @@ def test_detect_script(tmp_path, account, groups, expected_group):
     env = dict(os.environ, HOME=str(home), USER="alice", TEST_ACCOUNT=account,
                PATH=str(bindir) + os.pathsep + os.environ["PATH"])
     script = init_net.DETECT_WORKDIR.replace("/ceph/work", str(work))
-    result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, check=True)
+    result = subprocess.run(["bash", "-s"], input=script, env=env, text=True, capture_output=True, check=True)
     expected = work / expected_group / "alice" / "dicos" if expected_group else home / "dicos"
     assert result.stdout.strip() == str(expected)
     assert expected.is_dir()

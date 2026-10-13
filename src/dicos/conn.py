@@ -1,5 +1,7 @@
 """One private SSH master, with bounded, non-retrying authentication."""
 
+from datetime import datetime, timezone
+
 import fcntl
 import os
 import re
@@ -33,7 +35,10 @@ def _control(cfg: Config, operation: str) -> list[str]:
 
 
 def is_alive(cfg: Config) -> bool:
-    return subprocess.run(_control(cfg, "check"), capture_output=True).returncode == 0
+    try:
+        return subprocess.run(_control(cfg, "check"), capture_output=True).returncode == 0
+    except OSError:
+        return False
 
 
 def ensure_master(cfg: Config, creds: Credentials) -> None:
@@ -44,73 +49,95 @@ def ensure_master(cfg: Config, creds: Credentials) -> None:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if is_alive(cfg):
             return
-        argv = ["ssh", "-M", "-N", "-f", "-o", f"ControlPath={home / 'cm.sock'}",
-                "-o", "ControlPersist=8h", "-o", "ServerAliveInterval=60",
-                "-o", "PreferredAuthentications=keyboard-interactive,password",
-                "-o", "NumberOfPasswordPrompts=1", "-A"]
-        if cfg.jump:
-            argv += ["-J", cfg.jump]
-        argv += [f"{cfg.user}@{cfg.host}"]
-        child = pexpect.spawn(argv[0], argv[1:], echo=False, timeout=LOGIN_TIMEOUT)
-        child.logfile = None
-        deadline = time.monotonic() + LOGIN_TIMEOUT
-        seen = set()
-        output = b""
-        secrets = [creds.password, creds.totp_secret]
-
-        def failure(reason: str) -> LoginError:
-            text = output.decode(errors="replace")
-            for secret in secrets:
-                if secret:
-                    text = text.replace(secret, "[redacted]")
-            lines = [line for line in text.splitlines() if line.strip()][-5:]
-            return LoginError(reason + ("\n" + "\n".join(lines) if lines else ""))
-
+        marker = home / "login.failed"
+        if marker.exists():
+            raise LoginError(
+                "The previous login failed: " + marker.read_text(encoding="utf-8").strip()
+                + "\nFix credentials with `dicos init --force` or run `dicos logout` to allow one new attempt."
+            )
         try:
-            patterns = [HOSTKEY, DENIED, MENU, USER, PASSWORD, OTP, pexpect.EOF, pexpect.TIMEOUT]
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise failure("Login timed out (90s).")
-                index = child.expect(patterns, timeout=remaining)
-                output = (output + child.before)[-16384:]
-                if index == 0:
-                    manual = ["ssh"] + (["-J", cfg.jump] if cfg.jump else []) + [f"{cfg.user}@{cfg.host}"]
-                    raise LoginError(f"Unknown host key. Run `{shlex.join(manual)}` once manually to verify it.")
-                if index == 1:
-                    raise failure("Server rejected the login.")
-                if index == 6:
-                    child.close()
-                    if child.exitstatus != 0 or not is_alive(cfg):
-                        raise failure("Connection closed without an active master.")
-                    return
-                if index == 7:
-                    raise failure("Login timed out (90s).")
-                if index in seen:
-                    raise LoginError("previous answer rejected")
-                seen.add(index)
-                if index == 2:
-                    child.sendline("1")
-                elif index == 3:
-                    child.sendline(cfg.user)
-                elif index == 4:
-                    child.sendline(creds.password)
-                else:
-                    code = otp.current_code(creds.totp_secret)
-                    secrets.append(code)
-                    child.sendline(code)
-                    # ssh -f exits after authentication. Ignore MOTD prose such as
-                    # "password:" while still detecting repeated auth prompts.
-                    patterns[4] = re.compile(rb"(?im)^(?:\([^\r\n]*\)\s*)?password\s*:")
-        finally:
-            if child.isalive():
-                child.terminate(force=True)
-            child.close(force=True)
+            _login(cfg, creds, home)
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, LoginError) else "Login failed (" + type(exc).__name__ + ")."
+            for secret in (creds.password, creds.totp_secret):
+                if secret:
+                    reason = reason.replace(secret, "[redacted]")
+            paths.write_private(marker, datetime.now(timezone.utc).isoformat() + "\n" + reason + "\n")
+            raise LoginError(reason) from None
+        marker.unlink(missing_ok=True)
+
+
+def _login(cfg: Config, creds: Credentials, home) -> None:
+    argv = ["ssh", "-M", "-N", "-f", "-o", f"ControlPath={home / 'cm.sock'}",
+            "-o", "ControlPersist=8h", "-o", "ServerAliveInterval=60",
+            "-o", "PreferredAuthentications=keyboard-interactive,password",
+            "-o", "NumberOfPasswordPrompts=1", "-A"]
+    if cfg.jump:
+        argv += ["-J", cfg.jump]
+    argv += [f"{cfg.user}@{cfg.host}"]
+    try:
+        child = pexpect.spawn(argv[0], argv[1:], echo=False, timeout=LOGIN_TIMEOUT)
+    except pexpect.ExceptionPexpect:
+        raise LoginError("Could not start ssh. Check that ssh is installed.") from None
+    child.logfile = None
+    deadline = time.monotonic() + LOGIN_TIMEOUT
+    seen = set()
+    output = b""
+    secrets = [creds.password, creds.totp_secret]
+
+    def failure(reason: str) -> LoginError:
+        text = output.decode(errors="replace")
+        for secret in secrets:
+            if secret:
+                text = text.replace(secret, "[redacted]")
+        lines = [line for line in text.splitlines() if line.strip()][-5:]
+        return LoginError(reason + ("\n" + "\n".join(lines) if lines else ""))
+
+    try:
+        patterns = [HOSTKEY, DENIED, MENU, USER, PASSWORD, OTP, pexpect.EOF, pexpect.TIMEOUT]
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise failure("Login timed out (90s).")
+            index = child.expect(patterns, timeout=remaining)
+            output = (output + child.before)[-16384:]
+            if index == 0:
+                manual = ["ssh"] + (["-J", cfg.jump] if cfg.jump else []) + [f"{cfg.user}@{cfg.host}"]
+                raise LoginError(f"Unknown host key. Run `{shlex.join(manual)}` once manually to verify it.")
+            if index == 1:
+                raise failure("Server rejected the login.")
+            if index == 6:
+                child.close()
+                if child.exitstatus != 0 or not is_alive(cfg):
+                    raise failure("Connection closed without an active master.")
+                return
+            if index == 7:
+                raise failure("Login timed out (90s).")
+            if index in seen:
+                raise LoginError("previous answer rejected")
+            seen.add(index)
+            if index == 2:
+                child.sendline("1")
+            elif index == 3:
+                child.sendline(cfg.user)
+            elif index == 4:
+                child.sendline(creds.password)
+            else:
+                code = otp.current_code(creds.totp_secret)
+                secrets.append(code)
+                child.sendline(code)
+                # ssh -f exits after authentication. Ignore MOTD prose such as
+                # "password:" while still detecting repeated auth prompts.
+                patterns[4] = re.compile(rb"(?im)^(?:\([^\r\n]*\)\s*|[^\s\r\n]+@[^\s\r\n]+'s\s+)?password(?:\s+for\s+[^\s\r\n]+@[^\s\r\n:]+)?\s*:")
+    finally:
+        if child.isalive():
+            child.terminate(force=True)
+        child.close(force=True)
 
 
 def ssh_argv(cfg: Config, cmd: str | None, tty: bool, agent: bool = False) -> list[str]:
     argv = ["ssh", "-o", f"ControlPath={paths.home() / 'cm.sock'}", "-o",
-            "ControlMaster=no", "-o", "BatchMode=yes"]
+            "ControlMaster=no", "-o", "BatchMode=yes", "-o", "ProxyCommand=false"]
     if tty:
         argv.append("-t")
     if agent:
@@ -134,5 +161,7 @@ def exec_interactive(cfg: Config, cmd: str | None) -> None:
 def close(cfg: Config) -> bool:
     if not is_alive(cfg):
         return False
-    subprocess.run(_control(cfg, "exit"), capture_output=True, check=True)
-    return True
+    try:
+        return subprocess.run(_control(cfg, "exit"), capture_output=True).returncode == 0
+    except OSError:
+        return False

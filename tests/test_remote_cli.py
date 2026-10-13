@@ -1,10 +1,14 @@
 import subprocess
+import shlex
+
+import pexpect
 
 import pytest
 from typer.testing import CliRunner
 
 from dicos import config, conn, credentials, init_net, paths
 from dicos.cli import app
+from dicos.conn import close as close_master
 
 runner = CliRunner()
 
@@ -70,8 +74,9 @@ def test_doctor(remote):
                  "sinfo", "account association", "workdir writable", "GitHub reachable"]:
         assert name in result.output
     assert len(remote) == 5 and remote[0] == "master"
-    assert "test -w /work/alice/dicos" in remote
-    assert "timeout 15 git ls-remote https://github.com/git/git HEAD" in remote
+    assert "test -w /work/alice/dicos" in [shlex.split(cmd)[-1] for cmd in remote[1:]]
+    assert all(shlex.split(cmd)[:4] == ["timeout", "20", "bash", "-c"] for cmd in remote[1:])
+    assert "timeout 15 git ls-remote https://github.com/git/git HEAD" in [shlex.split(cmd)[-1] for cmd in remote[1:]]
 
 
 def test_doctor_login_failure(remote, monkeypatch):
@@ -89,6 +94,7 @@ def test_doctor_login_failure(remote, monkeypatch):
 @pytest.mark.parametrize("failure", ["sinfo", "account", "workdir", "github", "jump", "mode", "missing"])
 def test_doctor_failures(remote, monkeypatch, failure):
     def run(cfg, cmd):
+        cmd = shlex.split(cmd)[-1]
         bad = ((failure == "sinfo" and cmd.startswith("sinfo")) or
                (failure == "account" and cmd.startswith("sacctmgr")) or
                (failure == "workdir" and cmd.startswith("test")) or
@@ -117,3 +123,44 @@ def test_init_failed_login_preserves_files(monkeypatch):
     assert "5 failed logins" in result.output
     assert config.load().user == "alice"
     assert credentials.load().password == "synthetic-password"
+
+
+@pytest.mark.parametrize("error", [ValueError("Invalid TOTP secret"), pexpect.ExceptionPexpect("ssh missing")])
+def test_doctor_login_errors(remote, monkeypatch, error):
+    def fail(*args):
+        raise error
+    monkeypatch.setattr(conn, "ensure_master", fail)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    assert "FAIL" in result.output and str(error) in result.output
+    assert init_net.LOGIN_WARNING in result.output
+    assert not remote
+
+
+def test_logout_clears_latch_and_closes(remote):
+    paths.write_private(paths.home() / "login.failed", "stale")
+    result = runner.invoke(app, ["logout"])
+    assert result.exit_code == 0 and "Logged out" in result.output
+    assert remote == ["close"]
+    assert not (paths.home() / "login.failed").exists()
+
+
+@pytest.mark.parametrize("marker", [False, True])
+def test_logout_without_config(marker, monkeypatch):
+    if marker:
+        paths.write_private(paths.ensure_home() / "login.failed", "stale")
+    def forbidden(*args):
+        pytest.fail("logout must not connect without configuration")
+    monkeypatch.setattr(conn, "close", forbidden)
+    result = runner.invoke(app, ["logout"])
+    assert result.exit_code == 0
+    assert ("Login failure cleared" if marker else "No master") in result.output
+    assert not (paths.home() / "login.failed").exists()
+
+
+def test_logout_failed_exit(remote, monkeypatch):
+    monkeypatch.setattr(conn, "is_alive", lambda cfg: True)
+    monkeypatch.setattr(conn.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess([], 1))
+    monkeypatch.setattr(conn, "close", close_master)
+    result = runner.invoke(app, ["logout"])
+    assert result.exit_code == 0 and "could not be closed" in result.output

@@ -95,7 +95,7 @@ def connect_and_detect(cfg: Config, creds: Credentials) -> str:
         typer.echo(str(exc), err=True)
         typer.echo(LOGIN_WARNING, err=True)
         raise typer.Exit(1) from None
-    result = conn.run(cfg, DETECT_WORKDIR)
+    result = conn.run(cfg, "bash -s", input=DETECT_WORKDIR)
     if result.returncode or not result.stdout.strip():
         raise ValueError("Could not create the remote work directory.")
     return result.stdout.strip().splitlines()[-1]

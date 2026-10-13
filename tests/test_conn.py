@@ -5,6 +5,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+import pexpect
 
 from dicos import conn, paths
 from dicos.config import Config
@@ -53,6 +54,12 @@ if mode == 'repeat_otp':
 if mode == 'repeat_password_after_otp':
     prompt('\\n(alice@host) Password:')
     sys.exit(1)
+if mode == 'fallback_possessive':
+    prompt("\\nalice@host's Password:")
+    sys.exit(1)
+if mode == 'fallback_for':
+    prompt('\\nPassword for alice@host:')
+    sys.exit(1)
 if mode == 'fail':
     print('diagnostic ' + password + ' ' + code + ' ' + os.environ['FAKE_SECRET'])
     sys.exit(1)
@@ -95,6 +102,7 @@ def test_master_success(fake_ssh):
 
 @pytest.mark.parametrize("mode,message", [("repeat", "previous answer rejected"),
     ("repeat_otp", "previous answer rejected"), ("repeat_password_after_otp", "previous answer rejected"),
+    ("fallback_possessive", "previous answer rejected"), ("fallback_for", "previous answer rejected"),
     ("hostkey", "ssh -J lab alice@slurm-ui.twgrid.org"), ("fail", "Connection closed"),
     ("dead", "Connection closed"), ("hang", "timed out")])
 def test_login_failure(fake_ssh, monkeypatch, mode, message):
@@ -109,6 +117,12 @@ def test_login_failure(fake_ssh, monkeypatch, mode, message):
     assert conn.otp.current_code(SECRET) not in str(error.value)
     assert len(attempts()) == 1
     assert not conn.is_alive(CFG)
+    marker = paths.home() / "login.failed"
+    assert marker.exists()
+    assert CREDS.password not in marker.read_text() and SECRET not in marker.read_text()
+    with pytest.raises(conn.LoginError, match="previous login failed"):
+        conn.ensure_master(CFG, CREDS)
+    assert len(attempts()) == 1
 
 
 def test_lock_single_login(fake_ssh):
@@ -119,7 +133,7 @@ def test_lock_single_login(fake_ssh):
 
 def test_argv():
     base = ["ssh", "-o", f"ControlPath={paths.home() / 'cm.sock'}", "-o", "ControlMaster=no",
-            "-o", "BatchMode=yes"]
+            "-o", "BatchMode=yes", "-o", "ProxyCommand=false"]
     assert conn.ssh_argv(CFG, None, True) == base + ["-t", "alice@slurm-ui.twgrid.org"]
     assert conn.ssh_argv(CFG, "echo hi", False, True) == base + ["-A", "alice@slurm-ui.twgrid.org", "--", "echo hi"]
 
@@ -138,3 +152,77 @@ def test_exec(monkeypatch, cmd, stdin_tty, expected):
     monkeypatch.setattr(conn.os, "execvp", lambda *a: calls.append(a))
     conn.exec_interactive(CFG, cmd)
     assert calls == [("ssh", conn.ssh_argv(CFG, cmd, expected))]
+
+
+def test_failed_login_latch_parallel(fake_ssh, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "fail")
+
+    def login(_):
+        with pytest.raises(conn.LoginError) as error:
+            conn.ensure_master(CFG, CREDS)
+        return str(error.value)
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        errors = list(pool.map(login, range(5)))
+    assert len(errors) == 5 and len(attempts()) == 1
+    marker = paths.home() / "login.failed"
+    text = marker.read_text()
+    assert "Connection closed" in text
+    assert CREDS.password not in text and SECRET not in text
+    assert conn.otp.current_code(SECRET) not in text
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+    assert conn.datetime.fromisoformat(text.splitlines()[0]).tzinfo is not None
+    monkeypatch.setenv("FAKE_MODE", "success")
+    error = login(None)
+    assert "previous login failed" in error
+    assert "dicos init --force" in error and "dicos logout" in error
+    assert len(attempts()) == 1
+
+
+def test_success_removes_marker(fake_ssh, monkeypatch):
+    login = conn._login
+
+    def successful_login(*args):
+        login(*args)
+        paths.write_private(paths.home() / "login.failed", "stale")
+
+    monkeypatch.setattr(conn, "_login", successful_login)
+    conn.ensure_master(CFG, CREDS)
+    assert not (paths.home() / "login.failed").exists()
+
+
+def test_live_master_ignores_latch(fake_ssh):
+    conn.ensure_master(CFG, CREDS)
+    paths.write_private(paths.home() / "login.failed", "stale")
+    conn.ensure_master(CFG, CREDS)
+    assert len(attempts()) == 1
+
+
+def test_missing_ssh_latched(monkeypatch):
+    monkeypatch.setattr(conn, "is_alive", lambda cfg: False)
+    calls = []
+
+    def spawn(*args, **kwargs):
+        calls.append(True)
+        raise pexpect.ExceptionPexpect("ssh not found")
+
+    monkeypatch.setattr(conn.pexpect, "spawn", spawn)
+    for _ in range(2):
+        with pytest.raises(conn.LoginError):
+            conn.ensure_master(CFG, CREDS)
+    assert calls == [True]
+    assert "Could not start ssh" in (paths.home() / "login.failed").read_text()
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_close_failure(monkeypatch, missing):
+    monkeypatch.setattr(conn, "is_alive", lambda cfg: True)
+
+    def run(*args, **kwargs):
+        assert not kwargs.get("check")
+        if missing:
+            raise FileNotFoundError("ssh missing")
+        return subprocess.CompletedProcess([], 1)
+
+    monkeypatch.setattr(conn.subprocess, "run", run)
+    assert conn.close(CFG) is False

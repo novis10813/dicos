@@ -231,3 +231,31 @@ def test_init_account_selection_exhausted(private_home, monkeypatch, failure):
     assert "Account selection requires input" in result.output
     assert "Aborted!" not in result.output
     assert not private_home.exists()
+
+
+def test_init_clears_latch_before_connect(monkeypatch):
+    config.save(config.Config("original"))
+    paths.write_private(paths.home() / "login.failed", "stale")
+
+    def connect(cfg, creds):
+        assert not (paths.home() / "login.failed").exists()
+        assert credentials.load() == creds
+
+    monkeypatch.setattr(init_net, "connect_and_detect", connect)
+    result = runner.invoke(app, ["init", "--force", "--user", "alice", "--no-jump",
+                                 "--password-stdin", "--totp-secret-stdin"],
+                           input="synthetic-password\n" + SECRET + "\n")
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize("failure", [EOFError, typer.Abort])
+def test_init_jump_prompt_exhausted(private_home, monkeypatch, failure):
+    def fail(*args, **kwargs):
+        raise failure()
+    monkeypatch.setattr(init_net, "select_jump", fail)
+    result = runner.invoke(app, ["init", "--user", "alice", "--password-stdin", "--totp-secret-stdin"],
+                           input="synthetic-password\n" + SECRET + "\n")
+    assert result.exit_code == 1
+    assert "Initialization requires input" in result.output
+    assert "Aborted!" not in result.output
+    assert not private_home.exists()

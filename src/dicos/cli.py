@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 from typing import Optional
 
+import pexpect
 import typer
 
 from rich.console import Console
@@ -98,11 +99,15 @@ def init(
         code_value = otp.current_code(creds.totp_secret)
         credentials.save(creds)
         config.save(cfg)
+        (paths.home() / "login.failed").unlink(missing_ok=True)
         typer.echo(f"Current TOTP code: {code_value}")
         workdir = init_net.connect_and_detect(cfg, creds)
         if workdir is not None:
             cfg.workdir = workdir
             config.save(cfg)
+    except (typer.Abort, EOFError):
+        typer.echo("Initialization requires input. Run init interactively to choose a jump host.", err=True)
+        raise typer.Exit(1) from None
     except (ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from None
@@ -147,8 +152,19 @@ def exec_command(ctx: typer.Context):
 def logout():
     """Close the existing master without opening a new connection."""
     try:
-        running = conn.close(config.load())
-        typer.echo("Logged out." if running else "No master is running.")
+        marker = paths.home() / "login.failed"
+        failed = marker.exists()
+        marker.unlink(missing_ok=True)
+        if not (paths.home() / "config.yaml").exists():
+            running = False
+        else:
+            running = conn.close(config.load())
+        if running:
+            typer.echo("Logged out.")
+        elif failed:
+            typer.echo("Login failure cleared. No master closed.")
+        else:
+            typer.echo("No master is running or the master could not be closed.")
     except (ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from None
@@ -190,8 +206,9 @@ def doctor():
         row("jump reachable", reachable, cfg.jump or "direct")
         try:
             conn.ensure_master(cfg, creds)
-        except (conn.LoginError, OSError) as exc:
+        except (conn.LoginError, ValueError, pexpect.ExceptionPexpect, OSError) as exc:
             row("master login", False, str(exc))
+            typer.echo(init_net.LOGIN_WARNING, err=True)
         else:
             row("master login", True, "ControlMaster active")
             checks = [
@@ -202,7 +219,7 @@ def doctor():
             ]
             for name, command, needs_output in checks:
                 try:
-                    result = conn.run(cfg, command)
+                    result = conn.run(cfg, "timeout 20 bash -c " + shlex.quote(command))
                     ok = result.returncode == 0 and (not needs_output or bool(result.stdout.strip().strip("|")))
                     row(name, ok, result.stdout.strip() or result.stderr.strip() or f"exit {result.returncode}")
                 except OSError as exc:
