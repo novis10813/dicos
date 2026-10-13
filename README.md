@@ -11,8 +11,8 @@ CLI for running Slurm jobs on ASGC DiCOS (`slurm-ui.twgrid.org`) from a laptop. 
 ## Install
 
 ```bash
-uvx --from git+ssh://git@github.com/novis10813/dicos dicos --help   # one-off
-uv tool install git+ssh://git@github.com/novis10813/dicos           # persistent; later: dicos update
+uvx --from git+https://github.com/novis10813/dicos dicos --help   # one-off
+uv tool install git+https://github.com/novis10813/dicos           # persistent; later: dicos update
 ```
 
 ## Agent skill installation

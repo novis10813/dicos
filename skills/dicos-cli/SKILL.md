@@ -18,7 +18,7 @@ description: "Operator guide for the installed dicos CLI: run Slurm CPU/GPU jobs
 ## 2. Setup
 
 ```bash
-uv tool install git+ssh://git@github.com/novis10813/dicos   # install
+uv tool install git+https://github.com/novis10813/dicos   # install
 dicos update                                               # upgrade later
 dicos init                                                 # interactive wizard
 dicos doctor                                               # verify; exit 1 if any row fails

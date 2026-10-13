@@ -9,8 +9,8 @@
 ## Install and update
 
 ```bash
-uv tool install git+ssh://git@github.com/novis10813/dicos
-uvx --from git+ssh://git@github.com/novis10813/dicos dicos --help   # one-off, no install
+uv tool install git+https://github.com/novis10813/dicos
+uvx --from git+https://github.com/novis10813/dicos dicos --help   # one-off, no install
 dicos update --check     # report installed vs remote HEAD
 dicos update             # uv tool install --force --refresh <source>
 dicos --version
