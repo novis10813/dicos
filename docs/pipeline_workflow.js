@@ -36,7 +36,7 @@ for (const s of args.slices) {
     const ctx = `${base}\n\nReview slice ${s.slice}: commits after ${base_rev} (git log ${base_rev}..HEAD, git diff ${base_rev}..HEAD). Slice brief:\n${s.brief}\n${reviewerRules}`;
     const [spec, code] = await parallel([
       () => agent(`${ctx}\nFocus: missing, extra, or misunderstood behaviour versus spec.md and the brief.`, { agentType: 'spec-reviewer', model: REVIEW, label: `spec-${s.slice}-r${round}`, schema: verdictSchema }),
-      () => agent(`${ctx}\nFocus: correctness, security (file modes, secret leakage, login safety), error handling, test quality. You may run: cd /home/novis/research/dicos && uv run pytest -q and read-only `--help` commands. Do NOT run live dicos commands that submit, cancel or clean jobs; the implementer report contains the live verification output.`, { agentType: 'code-reviewer', model: REVIEW, label: `code-${s.slice}-r${round}`, schema: verdictSchema }),
+      () => agent(`${ctx}\nFocus: correctness, security (file modes, secret leakage, login safety), error handling, test quality. You may run: cd /home/novis/research/dicos && uv run pytest -q and read-only '--help' commands. Do NOT run live dicos commands that submit, cancel or clean jobs; the implementer report contains the live verification output.`, { agentType: 'code-reviewer', model: REVIEW, label: `code-${s.slice}-r${round}`, schema: verdictSchema }),
     ]);
     reviews.push({ round, spec, code });
     if (!spec || !code) { status = 'ERROR: reviewer returned no result'; break; }
