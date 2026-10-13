@@ -9,18 +9,21 @@ description: "Operator guide for the installed dicos CLI: run Slurm CPU/GPU jobs
 
 ## 1. Safety rules (read first)
 
+**Agents: read [references/authentication.md](references/authentication.md) before the first remote command.** It defines what the user must do themselves, what needs their go-ahead, and what to tell them.
+
 1. **Never retry logins in a loop.** More than 5 failed logins ban the source IP, which is the shared lab jump host. dicos itself never retries.
-2. **A failed login is latched** in `~/.dicos/login.failed`; every remote command then refuses to log in. Fix the cause first, then either `dicos init --force` (new credentials) or `dicos logout` (clears the latch and allows exactly one new attempt). Do not clear the latch without changing something.
-3. **Never print or copy `~/.dicos/credentials.json`.** It holds the password and TOTP secret (mode 0600).
-4. `dicos run` exiting 0 means **submitted (queued)**, not finished. Use `dicos wait`.
-5. GPUs are released by Slurm when the job ends. Keep `-t` tight; use `dicos stop ID` to end a job early. `dicos clean` only deletes files.
+2. **Secrets stay with the user.** Never ask for, accept, or type the password, TOTP secret, or QR export, and never read `~/.dicos/credentials.json`. `dicos init` is run by the user in their own terminal.
+3. **Any remote command may log in.** When the SSH master has expired, `status`, `run`, `list`, `doctor`, etc. perform one automated login. Check first without logging in: `ssh -o ControlPath=~/.dicos/cm.sock -O check x`.
+4. **A failed login is latched** in `~/.dicos/login.failed`; every remote command then refuses to log in. Report the reason to the user and let them fix the cause. Run `dicos logout` (one new attempt) or ask them to run `dicos init --force` only after they agree.
+5. `dicos run` exiting 0 means **submitted (queued)**, not finished. Use `dicos wait`.
+6. GPUs are released by Slurm when the job ends. Keep `-t` tight; use `dicos stop ID` to end a job early. `dicos clean` only deletes files.
 
 ## 2. Setup
 
 ```bash
 uv tool install git+https://github.com/novis10813/dicos   # install
 dicos update                                               # upgrade later
-dicos init                                                 # interactive wizard
+dicos init                                                 # interactive wizard, run by the user
 dicos doctor                                               # verify; exit 1 if any row fails
 dicos status                                               # partitions your account may use
 ```
@@ -128,8 +131,8 @@ dicos logout                           # close the master (also clears a login l
 
 | Symptom | Fix |
 |---|---|
-| `The previous login failed: ...` | Read the reason. Fix credentials (`dicos init --force`) or network, then `dicos logout` once. Never loop. |
-| `Unknown host key. Run ... once manually` | Run the printed `ssh -J ... user@slurm-ui.twgrid.org` command yourself, accept the key, Ctrl-C at the menu. |
+| `The previous login failed: ...` | Report the reason to the user. They fix credentials (`dicos init --force`) or the network; `dicos logout` once only after they agree. Never loop. |
+| `Unknown host key. Run ... once manually` | Ask the user to run the printed `ssh -J ... user@slurm-ui.twgrid.org` command, verify the key, and Ctrl-C at the menu. |
 | `working tree is dirty; commit first or use --sync` | Commit/stash, or `--sync`, or an explicit `--branch/--tag/--commit`. |
 | `HEAD is not on any remote branch; push first` | `git push`. |
 | `git checkout on the login node failed: ... Permission denied (publickey)` | `ssh-add` locally; check the key has repo access. |
@@ -141,6 +144,7 @@ Full guide: [references/troubleshooting.md](references/troubleshooting.md).
 
 ## 7. References
 
+- [Authentication handoff](references/authentication.md) — agent/user split for login, latch handling, message templates.
 - [Setup & utilities](references/setup.md) — install, init, doctor, update, login latch, ssh/exec/code/logout.
 - [Submission](references/submission.md) — run and sweep, git vs sync, resources, time format, job script.
 - [Monitoring & control](references/monitoring.md) — status, list, show, logs, wait, stop, clean, job states.

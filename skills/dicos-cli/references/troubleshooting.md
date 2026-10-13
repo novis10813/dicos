@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with `dicos doctor`. It never logs in while the latch is set.
+Start with `dicos doctor`. It never logs in while the latch is set, but it does log in when the master is down. Agents handle every login problem with the user as described in [authentication.md](authentication.md).
 
 ## Login and connection
 
@@ -10,7 +10,7 @@ Start with `dicos doctor`. It never logs in while the latch is set.
 | `previous answer rejected` | Server repeated the password or code prompt | Wrong password or TOTP. Compare `dicos code` with your app; fix with `dicos init --force`. |
 | `Server rejected the login.` | Authentication denied | Same as above; also check the account is active. |
 | `Login timed out (90s).` | Jump host or login node unreachable or slow | `dicos doctor` (jump reachable row). Check VPN/network, then `dicos logout` once. |
-| `Unknown host key. Run ... once manually` | First connection to the login node | Run the printed ssh command yourself, verify and accept the key, abort at the login menu. Then `dicos logout` once. |
+| `Unknown host key. Run ... once manually` | First connection to the login node | The user runs the printed ssh command, verifies and accepts the key, and aborts at the login menu. Then `dicos logout` once, with their agreement. |
 | `Credentials permissions are unsafe. Run chmod 600 ...` | File mode too open | Run the printed `chmod`. |
 | `Configuration missing. Run dicos init first.` / `Credentials missing...` | Not initialized or wrong `DICOS_HOME` | `dicos init`. |
 | `Workdir missing: run dicos init.` | Workdir detection never finished | `dicos init --force`, or set `workdir:` in `config.yaml`. |

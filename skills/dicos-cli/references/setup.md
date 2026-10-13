@@ -29,7 +29,7 @@ Interactive steps, in order:
 5. Files are written (`credentials.json` first, then `config.yaml`), the latch is cleared, and the current TOTP code is printed so you can compare it with your authenticator app.
 6. Real login (opens the master), then remote workdir detection: `/ceph/work/<group>/<user>/dicos` where `<group>` matches your Slurm account case-insensitively, else `$HOME/dicos`. Detection has a 180 s limit; on timeout the saved files stay and you can rerun `dicos init --force`.
 
-Non-interactive form (stdin lines are read in this order: password, then TOTP):
+`init` is run by the user in their own terminal; agents follow [authentication.md](authentication.md). Non-interactive form, for the user's own scripts with secrets from a secret store (stdin lines are read in this order: password, then TOTP):
 
 ```bash
 printf '%s\n%s\n' "$PASSWORD" "$TOTP_URI" | \
