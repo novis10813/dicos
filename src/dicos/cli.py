@@ -241,3 +241,49 @@ def doctor():
     Console().print(table)
     if not healthy:
         raise typer.Exit(1)
+
+
+@app.command()
+def status(all_partitions: bool = typer.Option(False, "--all")):
+    """Show available partitions, or all partitions with --all."""
+    from dicos import slurm
+
+    separator = "__DICOS_STATUS_SECTION__"
+    command = ("sinfo -h -o '%P|%G|%F|%l' && "
+               f"printf '\\n{separator}\\n' && "
+               "scontrol show partition -o && "
+               f"printf '\\n{separator}\\n' && "
+               "sacctmgr -n show assoc user=$USER format=account -P | head -1")
+    try:
+        cfg = _remote_config()
+        result = conn.run(cfg, command)
+        if result.returncode:
+            raise ValueError(result.stderr.strip() or f"Remote status failed (exit {result.returncode}).")
+        sections = result.stdout.split(separator)
+        if len(sections) != 3:
+            raise ValueError("Incomplete remote status response.")
+        info = slurm.parse_sinfo(sections[0])
+        partitions = {p["name"]: p for p in slurm.parse_partitions(sections[1])}
+        account = sections[2].strip().split("|", 1)[0].strip().casefold()
+        if not account:
+            raise ValueError("No Slurm account association found.")
+        table = Table("PARTITION", "GRES", "NODES idle/total", "TIMELIMIT")
+        if all_partitions:
+            table.add_column("ALLOWED")
+        for name, details in info.items():
+            if name not in partitions:
+                raise ValueError(f"Missing account permissions for partition {name}.")
+            accounts = {a.casefold() for a in partitions[name]["allow_accounts"]}
+            allowed = "all" in accounts or account in accounts
+            if not allowed and not all_partitions:
+                continue
+            nodes = details["nodes"]
+            row = [escape(name), escape(details["gres"]), f"{nodes['idle']}/{nodes['total']}",
+                   escape(details["timelimit"])]
+            if all_partitions:
+                row.append("yes" if allowed else "no")
+            table.add_row(*row)
+        Console().print(table)
+    except (conn.LoginError, ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
