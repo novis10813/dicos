@@ -302,3 +302,54 @@ def test_generated_codes_redacted_on_login_error(fake_ssh, monkeypatch):
     for secret in [CREDS.password, SECRET, *codes]:
         assert secret not in text
     assert "transport" in text
+
+
+@pytest.mark.parametrize("exitstatus", [0, None])
+@pytest.mark.parametrize("ready", [True, False])
+def test_login_polls_master_once_spawned(monkeypatch, exitstatus, ready):
+    class Child:
+        before = b""
+
+        def expect(self, patterns, timeout):
+            return 6  # EOF
+
+        def close(self, force=False):
+            pass
+
+        def isalive(self):
+            return False
+
+    child = Child()
+    child.exitstatus = exitstatus
+    spawns = []
+    polls = []
+    sleeps = []
+    clock = [0.0]
+
+    def spawn(*args, **kwargs):
+        spawns.append((args, kwargs))
+        return child
+
+    def alive(cfg):
+        polls.append(clock[0])
+        return ready and len(polls) == 3
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(conn.pexpect, "spawn", spawn)
+    monkeypatch.setattr(conn, "is_alive", alive)
+    monkeypatch.setattr(conn.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(conn.time, "sleep", sleep)
+    if ready:
+        conn._login(CFG, CREDS, paths.home())
+        assert polls == [0.0, 0.25, 0.5]
+        assert sleeps == [0.25, 0.25]
+    else:
+        with pytest.raises(conn.LoginError, match="^Connection closed without an active master\\.$"):
+            conn._login(CFG, CREDS, paths.home())
+        assert polls == [i * 0.25 for i in range(21)]
+        assert sleeps == [0.25] * 20
+    assert len(spawns) == 1
+    assert spawns[0][1]["ignore_sighup"] is True

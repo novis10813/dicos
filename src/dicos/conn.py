@@ -87,7 +87,8 @@ def _login(cfg: Config, creds: Credentials, home, secrets: list[str] | None = No
         argv += ["-J", cfg.jump]
     argv += [f"{cfg.user}@{cfg.host}"]
     try:
-        child = pexpect.spawn(argv[0], argv[1:], echo=False, timeout=LOGIN_TIMEOUT)
+        child = pexpect.spawn(argv[0], argv[1:], echo=False, timeout=LOGIN_TIMEOUT,
+                              ignore_sighup=True)
     except pexpect.ExceptionPexpect:
         raise LoginError("Could not start ssh. Check that ssh is installed.") from None
     child.logfile = None
@@ -120,9 +121,17 @@ def _login(cfg: Config, creds: Credentials, home, secrets: list[str] | None = No
                 raise failure("Server rejected the login.")
             if index == 6:
                 child.close()
-                if child.exitstatus != 0 or not is_alive(cfg):
-                    raise failure("Connection closed without an active master.")
-                return
+                if child.exitstatus in (0, None):
+                    # ssh -f can exit before the background master is ready.
+                    ready_deadline = time.monotonic() + 5
+                    while True:
+                        if is_alive(cfg):
+                            return
+                        remaining = ready_deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(0.25, remaining))
+                raise failure("Connection closed without an active master.")
             if index == 7:
                 raise failure("Login timed out (90s).")
             if index in seen:
